@@ -27,6 +27,10 @@ final class AdminController
         $status = Security::cleanString($_GET['status'] ?? '');
         $page = max(1, (int) ($_GET['p'] ?? 1));
         $perPage = 10;
+        $totalAll = $userModel->countAll($q, '', $status);
+        $totalAdmin = $userModel->countAll($q, 'admin', $status);
+        $totalInstructor = $userModel->countAll($q, 'instructor', $status);
+        $totalTrainee = $userModel->countAll($q, 'trainee', $status);
         View::render('admin/users', [
             'users' => $userModel->all($q, $perPage, ($page - 1) * $perPage, $role, $status),
             'roles' => $userModel->roles(),
@@ -35,8 +39,27 @@ final class AdminController
             'status' => $status,
             'pageNo' => $page,
             'totalPages' => max(1, (int) ceil($userModel->countAll($q, $role, $status) / $perPage)),
-            'editing' => isset($_GET['edit']) ? $userModel->find((int) $_GET['edit']) : null,
+            'totalFiltered' => $userModel->countAll($q, $role, $status),
+            'totalAll' => $totalAll,
+            'totalAdmin' => $totalAdmin,
+            'totalInstructor' => $totalInstructor,
+            'totalTrainee' => $totalTrainee,
         ]);
+    }
+
+    public function userDetail(): void
+    {
+        Auth::requireRole(['admin']);
+        $id = (int) ($_GET['id'] ?? 0);
+        $user = (new User())->find($id);
+        header('Content-Type: application/json');
+        if (!$user) {
+            http_response_code(404);
+            echo json_encode(['status' => 'error', 'message' => 'User not found']);
+            exit;
+        }
+        echo json_encode(['status' => 'success', 'user' => $user]);
+        exit;
     }
 
     public function saveUser(): void
@@ -88,13 +111,58 @@ final class AdminController
         Auth::requireRole(['admin']);
         $courseModel = new Course();
         $q = Security::cleanString($_GET['q'] ?? '');
+        $status = Security::cleanString($_GET['status'] ?? '');
+        $category = Security::cleanString($_GET['category'] ?? '');
+        
+        $db = \App\Core\Model::getDb();
+        $totalAll = (int) $db->query('SELECT COUNT(*) FROM courses')->fetchColumn();
+        $totalActive = (int) $db->query('SELECT COUNT(*) FROM courses WHERE status = "active"')->fetchColumn();
+        $totalDraft = (int) $db->query('SELECT COUNT(*) FROM courses WHERE status = "draft"')->fetchColumn();
+        $totalArchived = (int) $db->query('SELECT COUNT(*) FROM courses WHERE status = "archived"')->fetchColumn();
+
+        $totalAdgea = 0;
+        $totalIesga = 0;
+        try {
+            $totalAdgea = (int) $db->query('SELECT COUNT(*) FROM courses WHERE academy_id = (SELECT id FROM academies WHERE code = "ADGEA")')->fetchColumn();
+            $totalIesga = (int) $db->query('SELECT COUNT(*) FROM courses WHERE academy_id = (SELECT id FROM academies WHERE code = "IESGA")')->fetchColumn();
+        } catch (\Exception $e) {}
+
         View::render('admin/courses', [
-            'courses' => $courseModel->all($q, Security::cleanString($_GET['status'] ?? ''), Security::cleanString($_GET['category'] ?? '')),
+            'courses' => $courseModel->all($q, $status, $category),
             'instructors' => $courseModel->instructors(),
             'categories' => $courseModel->categories(),
             'editing' => isset($_GET['edit']) ? $courseModel->find((int) $_GET['edit']) : null,
             'q' => $q,
+            'status' => $status,
+            'category' => $category,
+            'totalAll' => $totalAll,
+            'totalActive' => $totalActive,
+            'totalDraft' => $totalDraft,
+            'totalArchived' => $totalArchived,
+            'totalAdgea' => $totalAdgea,
+            'totalIesga' => $totalIesga,
         ]);
+    }
+
+    public function courseDetail(): void
+    {
+        Auth::requireRole(['admin']);
+        $id = (int) ($_GET['id'] ?? 0);
+        $course = (new Course())->find($id);
+        header('Content-Type: application/json');
+        if (!$course) {
+            http_response_code(404);
+            echo json_encode(['status' => 'error', 'message' => 'Course not found']);
+            exit;
+        }
+        
+        // Add participant count
+        $db = \App\Core\Model::getDb();
+        $participantCount = (int) $db->query('SELECT COUNT(*) FROM enrolments WHERE course_id = ' . $id . ' AND status IN ("active","completed")')->fetchColumn();
+        $course['participant_count'] = $participantCount;
+        
+        echo json_encode(['status' => 'success', 'course' => $course]);
+        exit;
     }
 
     public function saveCourse(): void
@@ -150,7 +218,47 @@ final class AdminController
     public function enrolments(): void
     {
         Auth::requireRole(['admin']);
-        View::render('admin/enrolments', ['enrolments' => (new Enrollment())->allEnrolments()]);
+        $db = \App\Core\Model::getDb();
+        $totalAll = (int) $db->query('SELECT COUNT(*) FROM enrolments')->fetchColumn();
+        $totalPending = (int) $db->query('SELECT COUNT(*) FROM enrolments WHERE status = "pending"')->fetchColumn();
+        $totalActive = (int) $db->query('SELECT COUNT(*) FROM enrolments WHERE status = "active"')->fetchColumn();
+        $totalCompleted = (int) $db->query('SELECT COUNT(*) FROM enrolments WHERE status = "completed"')->fetchColumn();
+        $totalRejected = (int) $db->query('SELECT COUNT(*) FROM enrolments WHERE status = "rejected"')->fetchColumn();
+
+        View::render('admin/enrolments', [
+            'enrolments' => (new Enrollment())->allEnrolments(),
+            'totalAll' => $totalAll,
+            'totalPending' => $totalPending,
+            'totalActive' => $totalActive,
+            'totalCompleted' => $totalCompleted,
+            'totalRejected' => $totalRejected,
+        ]);
+    }
+
+    public function enrolmentDetail(): void
+    {
+        Auth::requireRole(['admin']);
+        $id = (int) ($_GET['id'] ?? 0);
+        
+        $db = \App\Core\Model::getDb();
+        $sql = 'SELECT e.*, c.title AS course_title, c.category AS course_category, c.description AS course_description, c.start_date AS course_start, c.end_date AS course_end, c.capacity AS course_capacity, c.max_participants AS course_max, c.fee AS course_fee, u.name AS trainee_name, u.email AS trainee_email, u.phone AS trainee_phone, u.address AS trainee_address, instr.name AS instructor_name FROM enrolments e JOIN courses c ON c.id = e.course_id JOIN users u ON u.id = e.trainee_id LEFT JOIN users instr ON instr.id = c.instructor_id WHERE e.id = ?';
+        $stmt = $db->prepare($sql);
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        
+        header('Content-Type: application/json');
+        if (!$row) {
+            http_response_code(404);
+            echo json_encode(['status' => 'error', 'message' => 'Enrolment not found']);
+            exit;
+        }
+        
+        // Fetch current occupancy
+        $participantCount = (int) $db->query('SELECT COUNT(*) FROM enrolments WHERE course_id = ' . (int) $row['course_id'] . ' AND status IN ("active","completed")')->fetchColumn();
+        $row['course_occupancy'] = $participantCount;
+        
+        echo json_encode(['status' => 'success', 'enrolment' => $row]);
+        exit;
     }
 
     public function setEnrolmentStatus(): void

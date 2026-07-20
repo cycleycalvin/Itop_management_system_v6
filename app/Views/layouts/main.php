@@ -31,7 +31,7 @@ try {
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="<?= APP_URL ?>/public/assets/css/app.css?v=2.0" rel="stylesheet">
+    <link href="<?= APP_URL ?>/public/assets/css/app.css?v=2.7" rel="stylesheet">
 </head>
 <body>
 
@@ -251,6 +251,6 @@ try {
 <?php endif; ?>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script src="<?= APP_URL ?>/public/assets/js/app.js?v=2.0"></script>
+<script src="<?= APP_URL ?>/public/assets/js/app.js?v=2.7"></script>
 </body>
 </html>
