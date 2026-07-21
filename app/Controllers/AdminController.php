@@ -967,16 +967,146 @@ final class AdminController
     {
         Auth::requireRole(['admin']);
         $userModel = new User();
+        $masterModel = new MasterData();
+        $db = \App\Core\Model::getDb();
+
         $q = Security::cleanString($_GET['q'] ?? '');
         $page = max(1, (int) ($_GET['p'] ?? 1));
         $perPage = 20;
+
+        $academyCode = Security::cleanString($_GET['academy'] ?? '');
+        $academyId = 0;
+        if ($academyCode !== '') {
+            $stmt = $db->prepare('SELECT id FROM academies WHERE code = ? LIMIT 1');
+            $stmt->execute([$academyCode]);
+            $academyId = (int) ($stmt->fetchColumn() ?: 0);
+        }
+
+        $filters = [
+            'location_id' => $_GET['location_id'] ?? '',
+            'company_id' => $_GET['company_id'] ?? '',
+            'institution_id' => $_GET['institution_id'] ?? '',
+            'profession_id' => $_GET['profession_id'] ?? '',
+            'status' => $_GET['status'] ?? '',
+            'academy_id' => $academyId,
+        ];
+
+        // Stats card values
+        $totalTrainees = (int) $db->query('SELECT COUNT(*) FROM users JOIN roles ON roles.id = users.role_id WHERE roles.slug = "trainee"')->fetchColumn();
+        $activeTrainees = (int) $db->query('SELECT COUNT(*) FROM users JOIN roles ON roles.id = users.role_id WHERE roles.slug = "trainee" AND users.status = "active"')->fetchColumn();
+        $enrolledTrainees = (int) $db->query('SELECT COUNT(DISTINCT trainee_id) FROM enrolments WHERE status = "active"')->fetchColumn();
+        $completedTrainees = (int) $db->query('SELECT COUNT(DISTINCT trainee_id) FROM enrolments WHERE status = "completed"')->fetchColumn();
+
+        // Academy counts (enrolled in at least one course in that academy)
+        $totalAdgeaTrainees = (int) $db->query('SELECT COUNT(DISTINCT e.trainee_id) FROM enrolments e JOIN courses c ON c.id = e.course_id JOIN academies a ON a.id = c.academy_id WHERE a.code = "ADGEA"')->fetchColumn();
+        $totalIesgaTrainees = (int) $db->query('SELECT COUNT(DISTINCT e.trainee_id) FROM enrolments e JOIN courses c ON c.id = e.course_id JOIN academies a ON a.id = c.academy_id WHERE a.code = "IESGA"')->fetchColumn();
+
+        // Load master data dropdowns
+        $locations = $masterModel->list('locations');
+        $companies = $masterModel->list('companies');
+        $institutions = $masterModel->list('institutions');
+        $professions = $masterModel->list('professions');
+
         View::render('admin/participants', [
-            'users' => $userModel->all($q, $perPage, ($page - 1) * $perPage, 'trainee', ''),
+            'users' => $userModel->allTrainees($q, $perPage, ($page - 1) * $perPage, $filters),
             'q' => $q,
             'pageNo' => $page,
-            'totalPages' => max(1, (int) ceil($userModel->countAll($q, 'trainee', '') / $perPage)),
+            'totalPages' => max(1, (int) ceil($userModel->countTrainees($q, $filters) / $perPage)),
+            'totalTrainees' => $totalTrainees,
+            'activeTrainees' => $activeTrainees,
+            'enrolledTrainees' => $enrolledTrainees,
+            'completedTrainees' => $completedTrainees,
+            'totalAdgea' => $totalAdgeaTrainees,
+            'totalIesga' => $totalIesgaTrainees,
+            'locations' => $locations,
+            'companies' => $companies,
+            'institutions' => $institutions,
+            'professions' => $professions,
+            'filters' => $filters,
+            'academyCode' => $academyCode,
         ]);
     }
+
+    /* ── Participant Detail API (AJAX) ────────────────── */
+    public function participantDetail(): void
+    {
+        Auth::requireRole(['admin']);
+        $userId = (int) ($_GET['id'] ?? 0);
+        $userModel = new User();
+        $trainee = $userModel->traineeDetail($userId);
+        
+        header('Content-Type: application/json');
+        if (!$trainee) {
+            http_response_code(404);
+            echo json_encode(['status' => 'error', 'message' => 'Trainee not found']);
+            exit;
+        }
+
+        $db = \App\Core\Model::getDb();
+        
+        // Fetch courses enrolled
+        $coursesStmt = $db->prepare('
+            SELECT e.status AS enrolment_status, e.progress_percent, e.completed_at,
+                   c.title AS course_title, c.start_date, c.end_date,
+                   a.code AS academy_code
+            FROM enrolments e
+            JOIN courses c ON c.id = e.course_id
+            LEFT JOIN academies a ON a.id = c.academy_id
+            WHERE e.trainee_id = ?
+            ORDER BY e.created_at DESC
+        ');
+        $coursesStmt->execute([$userId]);
+        $courses = $coursesStmt->fetchAll();
+
+        // Fetch certificates
+        $certStmt = $db->prepare('
+            SELECT cert.certificate_no, cert.issued_at, cert.pdf_path, cert.status AS cert_status,
+                   c.title AS course_title
+            FROM certificates cert
+            JOIN courses c ON c.id = cert.course_id
+            WHERE cert.trainee_id = ?
+            ORDER BY cert.issued_at DESC
+        ');
+        $certStmt->execute([$userId]);
+        $certificates = $certStmt->fetchAll();
+
+        echo json_encode([
+            'status' => 'success',
+            'trainee' => $trainee,
+            'courses' => $courses,
+            'certificates' => $certificates
+        ]);
+        exit;
+    }
+
+    /* ── Update Participant Master Data Links ─────────── */
+    public function updateParticipant(): void
+    {
+        Auth::requireRole(['admin']);
+        Security::verifyCsrf();
+        
+        $userId = (int) ($_POST['id'] ?? 0);
+        $userModel = new User();
+        $trainee = $userModel->find($userId);
+        
+        if (!$trainee) {
+            $_SESSION['flash_error'] = 'Participant not found.';
+            header('Location: index.php?page=admin-participants');
+            return;
+        }
+
+        $userModel->updateTraineeMasterData($userId, [
+            'company_id' => !empty($_POST['company_id']) ? (int) $_POST['company_id'] : null,
+            'institution_id' => !empty($_POST['institution_id']) ? (int) $_POST['institution_id'] : null,
+            'location_id' => !empty($_POST['location_id']) ? (int) $_POST['location_id'] : null,
+            'profession_id' => !empty($_POST['profession_id']) ? (int) $_POST['profession_id'] : null,
+        ]);
+
+        Activity::log('Updated master data links for trainee ID ' . $userId);
+        $_SESSION['flash_success'] = 'Trainee profile links updated successfully.';
+        header('Location: index.php?page=admin-participants');
+    }
+
 
     /* ── System Settings Page ─────────────────────────── */
     public function systemSettings(): void

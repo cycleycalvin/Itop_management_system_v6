@@ -150,4 +150,163 @@ final class User extends Model
     {
         return $this->db->query('SELECT * FROM roles ORDER BY id')->fetchAll();
     }
+
+    public function allTrainees(string $search = '', int $limit = 20, int $offset = 0, array $filters = []): array
+    {
+        $like = '%' . $search . '%';
+        $sql = 'SELECT u.*, 
+                       c.name AS company_name, 
+                       inst.name AS institution_name, 
+                       l.name AS location_name, 
+                       p.name AS profession_name,
+                       tp.education, tp.employment, tp.emergency_contact,
+                       (SELECT COUNT(*) FROM enrolments WHERE trainee_id = u.id AND status = "active") AS active_courses_count,
+                       (SELECT COUNT(*) FROM enrolments WHERE trainee_id = u.id AND status = "completed") AS completed_courses_count
+                FROM users u
+                JOIN roles r ON r.id = u.role_id AND r.slug = "trainee"
+                LEFT JOIN trainee_profiles tp ON tp.user_id = u.id
+                LEFT JOIN companies c ON c.id = u.company_id
+                LEFT JOIN institutions inst ON inst.id = u.institution_id
+                LEFT JOIN locations l ON l.id = u.location_id
+                LEFT JOIN professions p ON p.id = u.profession_id
+                WHERE (u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ? OR u.identity_number LIKE ?)';
+        
+        $params = [$like, $like, $like, $like];
+
+        if (!empty($filters['location_id'])) {
+            $sql .= ' AND u.location_id = ?';
+            $params[] = (int) $filters['location_id'];
+        }
+        if (!empty($filters['company_id'])) {
+            $sql .= ' AND u.company_id = ?';
+            $params[] = (int) $filters['company_id'];
+        }
+        if (!empty($filters['institution_id'])) {
+            $sql .= ' AND u.institution_id = ?';
+            $params[] = (int) $filters['institution_id'];
+        }
+        if (!empty($filters['profession_id'])) {
+            $sql .= ' AND u.profession_id = ?';
+            $params[] = (int) $filters['profession_id'];
+        }
+        if (!empty($filters['status'])) {
+            $sql .= ' AND u.status = ?';
+            $params[] = $filters['status'];
+        }
+        if (!empty($filters['academy_id'])) {
+            $sql .= ' AND EXISTS (SELECT 1 FROM enrolments e JOIN courses co ON co.id = e.course_id WHERE e.trainee_id = u.id AND co.academy_id = ?)';
+            $params[] = (int) $filters['academy_id'];
+        }
+
+        $sql .= ' ORDER BY u.name LIMIT ? OFFSET ?';
+        
+        $stmt = $this->db->prepare($sql);
+        foreach ($params as $index => $value) {
+            $stmt->bindValue($index + 1, $value);
+        }
+        $stmt->bindValue(count($params) + 1, $limit, \PDO::PARAM_INT);
+        $stmt->bindValue(count($params) + 2, $offset, \PDO::PARAM_INT);
+        
+        $stmt->execute();
+        $trainees = $stmt->fetchAll();
+
+        foreach ($trainees as &$t) {
+            $t['profile_completion'] = self::calculateCompletion($t);
+        }
+
+        return $trainees;
+    }
+
+    public function countTrainees(string $search = '', array $filters = []): int
+    {
+        $like = '%' . $search . '%';
+        $sql = 'SELECT COUNT(DISTINCT u.id)
+                FROM users u
+                JOIN roles r ON r.id = u.role_id AND r.slug = "trainee"
+                LEFT JOIN trainee_profiles tp ON tp.user_id = u.id
+                WHERE (u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ? OR u.identity_number LIKE ?)';
+        
+        $params = [$like, $like, $like, $like];
+
+        if (!empty($filters['location_id'])) {
+            $sql .= ' AND u.location_id = ?';
+            $params[] = (int) $filters['location_id'];
+        }
+        if (!empty($filters['company_id'])) {
+            $sql .= ' AND u.company_id = ?';
+            $params[] = (int) $filters['company_id'];
+        }
+        if (!empty($filters['institution_id'])) {
+            $sql .= ' AND u.institution_id = ?';
+            $params[] = (int) $filters['institution_id'];
+        }
+        if (!empty($filters['profession_id'])) {
+            $sql .= ' AND u.profession_id = ?';
+            $params[] = (int) $filters['profession_id'];
+        }
+        if (!empty($filters['status'])) {
+            $sql .= ' AND u.status = ?';
+            $params[] = $filters['status'];
+        }
+        if (!empty($filters['academy_id'])) {
+            $sql .= ' AND EXISTS (SELECT 1 FROM enrolments e JOIN courses co ON co.id = e.course_id WHERE e.trainee_id = u.id AND co.academy_id = ?)';
+            $params[] = (int) $filters['academy_id'];
+        }
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        return (int) $stmt->fetchColumn();
+    }
+
+    public function traineeDetail(int $userId): ?array
+    {
+        $sql = 'SELECT u.*, 
+                       c.name AS company_name, 
+                       inst.name AS institution_name, 
+                       l.name AS location_name, 
+                       p.name AS profession_name,
+                       tp.education, tp.employment, tp.emergency_contact
+                FROM users u
+                LEFT JOIN trainee_profiles tp ON tp.user_id = u.id
+                LEFT JOIN companies c ON c.id = u.company_id
+                LEFT JOIN institutions inst ON inst.id = u.institution_id
+                LEFT JOIN locations l ON l.id = u.location_id
+                LEFT JOIN professions p ON p.id = u.profession_id
+                WHERE u.id = ? LIMIT 1';
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$userId]);
+        $trainee = $stmt->fetch();
+        if ($trainee) {
+            $trainee['profile_completion'] = self::calculateCompletion($trainee);
+        }
+        return $trainee ?: null;
+    }
+
+    public function updateTraineeMasterData(int $userId, array $data): void
+    {
+        $stmt = $this->db->prepare('UPDATE users SET company_id = ?, institution_id = ?, location_id = ?, profession_id = ?, updated_at = NOW() WHERE id = ?');
+        $stmt->execute([
+            $data['company_id'] ?: null,
+            $data['institution_id'] ?: null,
+            $data['location_id'] ?: null,
+            $data['profession_id'] ?: null,
+            $userId
+        ]);
+    }
+
+    public static function calculateCompletion(array $user): int
+    {
+        $fields = [
+            'phone', 'address', 'identity_number', 'gender', 'date_of_birth',
+            'profile_picture', 'company_id', 'institution_id', 'location_id', 'profession_id'
+        ];
+        $filled = 0;
+        foreach ($fields as $field) {
+            if (isset($user[$field]) && $user[$field] !== null && $user[$field] !== '') {
+                $filled++;
+            }
+        }
+        return (int) round(($filled / count($fields)) * 100);
+    }
 }
+

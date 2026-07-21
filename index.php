@@ -62,10 +62,12 @@ $routes = [
         'admin-analytics' => [AdminController::class, 'analytics'],
         'admin-analytics-detail' => [AdminController::class, 'analyticsDetail'],
         'admin-participants' => [AdminController::class, 'participants'],
+        'admin-participant-detail' => [AdminController::class, 'participantDetail'],
         'admin-system-settings' => [AdminController::class, 'systemSettings'],
         'admin-backup-database' => [AdminController::class, 'backupDatabase'],
     ],
     'POST' => [
+        'admin-participant-update' => [AdminController::class, 'updateParticipant'],
         'admin-save-analytics-details' => [AdminController::class, 'saveAnalyticsDetails'],
         'admin-create-custom-chart' => [AdminController::class, 'createCustomChart'],
         'admin-delete-custom-chart' => [AdminController::class, 'deleteCustomChart'],
