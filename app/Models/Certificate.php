@@ -102,4 +102,17 @@ final class Certificate extends Model
         $stmt = $this->db->prepare('INSERT INTO certificate_download_logs (certificate_id, user_id, ip_address) VALUES (?, ?, ?)');
         $stmt->execute([$id, $userId, $_SERVER['REMOTE_ADDR'] ?? null]);
     }
+
+    public function getDownloadLogs(int $id): array
+    {
+        $stmt = $this->db->prepare('SELECT l.*, u.name AS user_name, u.email AS user_email FROM certificate_download_logs l JOIN users u ON u.id = l.user_id WHERE l.certificate_id = ? ORDER BY l.downloaded_at DESC');
+        $stmt->execute([$id]);
+        return $stmt->fetchAll();
+    }
+
+    public function revoke(int $id): void
+    {
+        $stmt = $this->db->prepare('UPDATE certificates SET status = "revoked" WHERE id = ?');
+        $stmt->execute([$id]);
+    }
 }

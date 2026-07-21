@@ -456,6 +456,40 @@ $buildUrl = static function(array $extra) use ($queryParams): string {
 </div>
 
 <script>
+// Global Error Reporter for diagnostic purposes
+window.addEventListener('error', function(e) {
+    console.error("Global JS Error Captured: ", e);
+    const errDiv = document.createElement('div');
+    errDiv.className = 'alert alert-danger m-3';
+    errDiv.style.position = 'fixed';
+    errDiv.style.top = '10px';
+    errDiv.style.left = '10px';
+    errDiv.style.right = '10px';
+    errDiv.style.zIndex = '99999';
+    errDiv.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+    errDiv.innerHTML = `<strong>JavaScript Error:</strong> ${e.message}<br><small style="font-family: monospace;">at ${e.filename || 'unknown'}:${e.lineno || 0}:${e.colno || 0}</small>`;
+    document.body.appendChild(errDiv);
+});
+
+// Safe localStorage Wrapper to prevent SecurityError blocks
+const safeLocalStorage = {
+    getItem(key) {
+        try {
+            return localStorage.getItem(key);
+        } catch (e) {
+            console.warn('localStorage getItem blocked:', e);
+            return null;
+        }
+    },
+    setItem(key, value) {
+        try {
+            localStorage.setItem(key, value);
+        } catch (e) {
+            console.warn('localStorage setItem blocked:', e);
+        }
+    }
+};
+
 // Toggle View Logic (Persisted in localStorage)
 const viewTable = document.getElementById('pmViewTable');
 const viewGrid = document.getElementById('pmViewGrid');
@@ -463,29 +497,33 @@ const btnTable = document.getElementById('pmViewBtnTable');
 const btnGrid = document.getElementById('pmViewBtnGrid');
 
 function applyViewPreference() {
-    const pref = localStorage.getItem('pm_view_pref') || 'table';
-    if (pref === 'grid') {
-        if (viewTable) viewTable.classList.remove('pm-view-section-active');
-        if (viewGrid) viewGrid.classList.add('pm-view-section-active');
-        if (btnTable) btnTable.classList.remove('pm-view-btn-active');
-        if (btnGrid) btnGrid.classList.add('pm-view-btn-active');
-    } else {
-        if (viewGrid) viewGrid.classList.remove('pm-view-section-active');
-        if (viewTable) viewTable.classList.add('pm-view-section-active');
-        if (btnGrid) btnGrid.classList.remove('pm-view-btn-active');
-        if (btnTable) btnTable.classList.add('pm-view-btn-active');
+    try {
+        const pref = safeLocalStorage.getItem('pm_view_pref') || 'table';
+        if (pref === 'grid') {
+            if (viewTable) viewTable.classList.remove('pm-view-section-active');
+            if (viewGrid) viewGrid.classList.add('pm-view-section-active');
+            if (btnTable) btnTable.classList.remove('pm-view-btn-active');
+            if (btnGrid) btnGrid.classList.add('pm-view-btn-active');
+        } else {
+            if (viewGrid) viewGrid.classList.remove('pm-view-section-active');
+            if (viewTable) viewTable.classList.add('pm-view-section-active');
+            if (btnGrid) btnGrid.classList.remove('pm-view-btn-active');
+            if (btnTable) btnTable.classList.add('pm-view-btn-active');
+        }
+    } catch (e) {
+        console.error('Error applying view preference:', e);
     }
 }
 
 if (btnTable) {
     btnTable.addEventListener('click', () => {
-        localStorage.setItem('pm_view_pref', 'table');
+        safeLocalStorage.setItem('pm_view_pref', 'table');
         applyViewPreference();
     });
 }
 if (btnGrid) {
     btnGrid.addEventListener('click', () => {
-        localStorage.setItem('pm_view_pref', 'grid');
+        safeLocalStorage.setItem('pm_view_pref', 'grid');
         applyViewPreference();
     });
 }
@@ -500,182 +538,277 @@ const panelLoading = document.getElementById('pmPanelLoading');
 const panelContent = document.getElementById('pmPanelContent');
 const panelClose = document.getElementById('pmPanelClose');
 
+// Relocate panel overlay and drawer panel to document.body to escape the parent container's stacking context.
+// This ensures they render globally above all other elements (topbar, sidenav, footer).
+try {
+    if (panelOverlay) document.body.appendChild(panelOverlay);
+    if (detailPanel) document.body.appendChild(detailPanel);
+} catch (e) {
+    console.error('Error relocating drawer modal in DOM:', e);
+}
+
+let activeAbortController = null;
+let fetchTimerInterval = null;
+
 function closeTraineeDetail() {
     if (detailPanel) detailPanel.classList.remove('pm-panel-open');
     if (panelOverlay) panelOverlay.classList.remove('pm-panel-overlay-active');
+    
+    // Cancel any active abort controller
+    if (activeAbortController) {
+        activeAbortController.abort();
+        activeAbortController = null;
+    }
+    // Clear visual loader timer
+    if (fetchTimerInterval) {
+        clearInterval(fetchTimerInterval);
+        fetchTimerInterval = null;
+    }
 }
 
 if (panelClose) panelClose.addEventListener('click', closeTraineeDetail);
 if (panelOverlay) panelOverlay.addEventListener('click', closeTraineeDetail);
 
-function openTraineeDetail(userId) {
-    if (!detailPanel || !panelOverlay) return;
-    
-    // Show drawer and spinner
-    panelOverlay.classList.add('pm-panel-overlay-active');
-    detailPanel.classList.add('pm-panel-open');
-    panelLoading.style.display = 'flex';
-    panelContent.style.display = 'none';
+// Add global listener for Escape key to close the panel
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        closeTraineeDetail();
+    }
+});
 
-    // Reset spinner & loading text
+function openTraineeDetail(userId) {
+    console.log("openTraineeDetail initialized for userId:", userId);
+    
+    // Clear any existing loading timers and cancel any active request
+    if (fetchTimerInterval) {
+        clearInterval(fetchTimerInterval);
+        fetchTimerInterval = null;
+    }
+    if (activeAbortController) {
+        activeAbortController.abort();
+        activeAbortController = null;
+    }
+
     const spinner = document.getElementById('pmPanelSpinner');
     const loadingText = document.getElementById('pmPanelLoadingText');
-    if (spinner) spinner.style.display = 'block';
-    if (loadingText) loadingText.textContent = 'Fetching trainee records…';
+    
+    try {
+        if (!detailPanel || !panelOverlay) {
+            console.error("Required drawer panel elements are missing from the DOM.");
+            return;
+        }
+        
+        // Show drawer and spinner
+        panelOverlay.classList.add('pm-panel-overlay-active');
+        detailPanel.classList.add('pm-panel-open');
+        panelLoading.style.display = 'flex';
+        panelContent.style.display = 'none';
 
-    // Fetch trainee data
-    fetch('index.php?page=admin-participant-detail&id=' + userId)
-        .then(res => {
-            if (!res.ok) {
-                throw new Error(`HTTP error ${res.status}: ${res.statusText}`);
-            }
-            return res.json();
-        })
-        .then(data => {
-            if (data.status !== 'success') {
-                throw new Error(data.message || 'Failed to retrieve trainee info.');
-            }
+        // Reset spinner & loading text
+        if (spinner) spinner.style.display = 'block';
+        if (loadingText) loadingText.textContent = 'Fetching trainee records…';
 
-            const trainee = data.trainee;
-            
-            // Helper function to safely set element text
-            const setValText = (id, val) => {
-                const el = document.getElementById(id);
-                if (el) el.textContent = val;
-            };
-
-            // Helper function to safely set input value
-            const setInputVal = (id, val) => {
-                const el = document.getElementById(id);
-                if (el) el.value = val;
-            };
-
-            // Populate basic details
-            setInputVal('traineeIdField', trainee.id);
-            
-            const avatar = document.getElementById('drAvatar');
-            if (avatar) {
-                avatar.textContent = trainee.name ? trainee.name.substring(0, 1).toUpperCase() : 'T';
-            }
-
-            setValText('drName', trainee.name || 'Trainee Name');
-            setValText('drEmail', trainee.email || 'trainee@email.com');
-            setValText('drIC', trainee.identity_number || '—');
-            setValText('drPhone', trainee.phone || '—');
-            setValText('drGender', trainee.gender || '—');
-            setValText('drDOB', trainee.date_of_birth || '—');
-            setValText('drAddress', trainee.address || '—');
-            setValText('drFallbackText', trainee.institution_company || '—');
-
-            // Completion bar
-            const comp = trainee.profile_completion || 0;
-            const compText = document.getElementById('drCompletionText');
-            const compFill = document.getElementById('drCompletionFill');
-            if (compText) compText.textContent = comp + '%';
-            if (compFill) {
-                compFill.style.width = comp + '%';
-                compFill.className = 'pm-completion-fill';
-                if (comp >= 80) compFill.classList.add('pm-fill-high');
-                else if (comp >= 40) compFill.classList.add('pm-fill-mid');
-                else compFill.classList.add('pm-fill-low');
-            }
-
-            // Set Dropdowns values
-            setInputVal('editCompanyId', trainee.company_id || '');
-            setInputVal('editInstitutionId', trainee.institution_id || '');
-            setInputVal('editLocationId', trainee.location_id || '');
-            setInputVal('editProfessionId', trainee.profession_id || '');
-
-            // Render Courses Journey
-            const coursesList = document.getElementById('drCoursesList');
-            if (coursesList) {
-                coursesList.innerHTML = '';
-                if (data.courses && data.courses.length > 0) {
-                    data.courses.forEach(c => {
-                        const row = document.createElement('div');
-                        row.className = 'pm-drawer-item';
-                        
-                        const left = document.createElement('div');
-                        const title = document.createElement('h5');
-                        title.className = 'pm-drawer-item-title';
-                        title.textContent = c.course_title || 'Untitled Course';
-                        const sub = document.createElement('p');
-                        sub.className = 'pm-drawer-item-sub';
-                        sub.textContent = (c.academy_code ? `Academy: ${c.academy_code} | ` : '') + `Progress: ${c.progress_percent ?? 0}%`;
-                        
-                        left.appendChild(title);
-                        left.appendChild(sub);
-                        row.appendChild(left);
-
-                        const right = document.createElement('span');
-                        const statusVal = c.enrolment_status || 'pending';
-                        const badgeClass = statusVal === 'completed' ? 'bg-success' : (statusVal === 'active' ? 'bg-info text-white' : 'bg-secondary');
-                        right.className = `badge ${badgeClass}`;
-                        right.textContent = statusVal.toUpperCase();
-                        row.appendChild(right);
-
-                        coursesList.appendChild(row);
-                    });
-                } else {
-                    coursesList.innerHTML = '<p class="text-muted small italic">No courses registered yet.</p>';
-                }
-            }
-
-            // Render Certificates List
-            const certsList = document.getElementById('drCertificatesList');
-            if (certsList) {
-                certsList.innerHTML = '';
-                if (data.certificates && data.certificates.length > 0) {
-                    data.certificates.forEach(c => {
-                        const row = document.createElement('div');
-                        row.className = 'pm-drawer-item';
-                        
-                        const left = document.createElement('div');
-                        const title = document.createElement('h5');
-                        title.className = 'pm-drawer-item-title';
-                        title.textContent = c.course_title || 'Untitled Course';
-                        const sub = document.createElement('p');
-                        sub.className = 'pm-drawer-item-sub';
-                        sub.textContent = `No: ${c.certificate_no || '—'} | Issued: ${c.issued_at || '—'}`;
-                        
-                        left.appendChild(title);
-                        left.appendChild(sub);
-                        row.appendChild(left);
-
-                        if (c.pdf_path) {
-                            const link = document.createElement('a');
-                            link.href = 'storage/certificates/' + c.pdf_path;
-                            link.target = '_blank';
-                            link.className = 'pm-btn pm-btn-secondary py-1 px-2 small';
-                            link.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
-                            row.appendChild(link);
-                        }
-
-                        certsList.appendChild(row);
-                    });
-                } else {
-                    certsList.innerHTML = '<p class="text-muted small italic">No certificates issued yet.</p>';
-                }
-            }
-
-            // Swap Loading to Content
-            panelLoading.style.display = 'none';
-            panelContent.style.display = 'flex';
-        })
-        .catch(err => {
-            console.error(err);
-            if (spinner) spinner.style.display = 'none';
+        // Start visual load timer
+        let secondsElapsed = 0;
+        fetchTimerInterval = setInterval(() => {
+            secondsElapsed++;
             if (loadingText) {
-                loadingText.innerHTML = `
-                    <div class="text-danger mb-3" style="font-size: 0.92rem; line-height: 1.4;">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="mb-2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><br>
-                        <strong>Failed to load profile details:</strong><br>
-                        <span style="font-family: monospace; font-size: 0.8rem; background: rgba(220,53,69,0.06); padding: 4px 8px; border-radius: 4px; display: inline-block; margin-top: 5px; word-break: break-all;">${err.message}</span>
-                    </div>
-                    <button type="button" class="pm-btn pm-btn-secondary px-3 py-1 small" onclick="closeTraineeDetail()">Close Panel</button>
-                `;
+                loadingText.textContent = `Fetching trainee records… (${secondsElapsed}s)`;
             }
-        });
+        }, 1000);
+
+        // Instantiate AbortController for fetch timeout
+        activeAbortController = new AbortController();
+        const timeoutId = setTimeout(() => {
+            if (activeAbortController) {
+                activeAbortController.abort();
+            }
+        }, 10000); // 10 seconds timeout
+
+        // Fetch trainee data (using robust query-based URL relative to current location)
+        const fetchUrl = '?page=admin-participant-detail&id=' + encodeURIComponent(userId);
+        console.log("Initiating fetch request to:", fetchUrl);
+
+        fetch(fetchUrl, { signal: activeAbortController.signal })
+            .then(res => {
+                clearTimeout(timeoutId);
+                console.log("Fetch response received. HTTP status:", res.status, res.statusText);
+                if (!res.ok) {
+                    throw new Error(`HTTP error ${res.status}: ${res.statusText}`);
+                }
+                return res.json();
+            })
+            .then(data => {
+                // Clear active controller reference
+                activeAbortController = null;
+                console.log("Parsed JSON data response:", data);
+                
+                // Clear the loading timer on success
+                if (fetchTimerInterval) {
+                    clearInterval(fetchTimerInterval);
+                    fetchTimerInterval = null;
+                }
+
+                if (data.status !== 'success') {
+                    throw new Error(data.message || 'Failed to retrieve trainee info.');
+                }
+
+                const trainee = data.trainee;
+                if (!trainee) {
+                    throw new Error('Trainee records are empty/missing in response.');
+                }
+                
+                // Helper function to safely set element text
+                const setValText = (id, val) => {
+                    const el = document.getElementById(id);
+                    if (el) el.textContent = val;
+                };
+
+                // Helper function to safely set input value
+                const setInputVal = (id, val) => {
+                    const el = document.getElementById(id);
+                    if (el) el.value = val;
+                };
+
+                // Populate basic details
+                setInputVal('traineeIdField', trainee.id);
+                
+                const avatar = document.getElementById('drAvatar');
+                if (avatar) {
+                    avatar.textContent = trainee.name ? trainee.name.substring(0, 1).toUpperCase() : 'T';
+                }
+
+                setValText('drName', trainee.name || 'Trainee Name');
+                setValText('drEmail', trainee.email || 'trainee@email.com');
+                setValText('drIC', trainee.identity_number || '—');
+                setValText('drPhone', trainee.phone || '—');
+                setValText('drGender', trainee.gender || '—');
+                setValText('drDOB', trainee.date_of_birth || '—');
+                setValText('drAddress', trainee.address || '—');
+                setValText('drFallbackText', trainee.institution_company || '—');
+
+                // Completion bar
+                const comp = trainee.profile_completion || 0;
+                const compText = document.getElementById('drCompletionText');
+                const compFill = document.getElementById('drCompletionFill');
+                if (compText) compText.textContent = comp + '%';
+                if (compFill) {
+                    compFill.style.width = comp + '%';
+                    compFill.className = 'pm-completion-fill';
+                    if (comp >= 80) compFill.classList.add('pm-fill-high');
+                    else if (comp >= 40) compFill.classList.add('pm-fill-mid');
+                    else compFill.classList.add('pm-fill-low');
+                }
+
+                // Set Dropdowns values
+                setInputVal('editCompanyId', trainee.company_id || '');
+                setInputVal('editInstitutionId', trainee.institution_id || '');
+                setInputVal('editLocationId', trainee.location_id || '');
+                setInputVal('editProfessionId', trainee.profession_id || '');
+
+                // Render Courses Journey
+                const coursesList = document.getElementById('drCoursesList');
+                if (coursesList) {
+                    coursesList.innerHTML = '';
+                    if (data.courses && data.courses.length > 0) {
+                        data.courses.forEach(c => {
+                            const row = document.createElement('div');
+                            row.className = 'pm-drawer-item';
+                            
+                            const left = document.createElement('div');
+                            const title = document.createElement('h5');
+                            title.className = 'pm-drawer-item-title';
+                            title.textContent = c.course_title || 'Untitled Course';
+                            const sub = document.createElement('p');
+                            sub.className = 'pm-drawer-item-sub';
+                            sub.textContent = (c.academy_code ? `Academy: ${c.academy_code} | ` : '') + `Progress: ${c.progress_percent || 0}%`;
+                            
+                            left.appendChild(title);
+                            left.appendChild(sub);
+                            row.appendChild(left);
+
+                            const right = document.createElement('span');
+                            const statusVal = c.enrolment_status || 'pending';
+                            const badgeClass = statusVal === 'completed' ? 'bg-success' : (statusVal === 'active' ? 'bg-info text-white' : 'bg-secondary');
+                            right.className = `badge ${badgeClass}`;
+                            right.textContent = statusVal.toUpperCase();
+                            row.appendChild(right);
+
+                            coursesList.appendChild(row);
+                        });
+                    } else {
+                        coursesList.innerHTML = '<p class="text-muted small italic">No courses registered yet.</p>';
+                    }
+                }
+
+                // Render Certificates List
+                const certsList = document.getElementById('drCertificatesList');
+                if (certsList) {
+                    certsList.innerHTML = '';
+                    if (data.certificates && data.certificates.length > 0) {
+                        data.certificates.forEach(c => {
+                            const row = document.createElement('div');
+                            row.className = 'pm-drawer-item';
+                            
+                            const left = document.createElement('div');
+                            const title = document.createElement('h5');
+                            title.className = 'pm-drawer-item-title';
+                            title.textContent = c.course_title || 'Untitled Course';
+                            const sub = document.createElement('p');
+                            sub.className = 'pm-drawer-item-sub';
+                            sub.textContent = `No: ${c.certificate_no || '—'} | Issued: ${c.issued_at || '—'}`;
+                            
+                            left.appendChild(title);
+                            left.appendChild(sub);
+                            row.appendChild(left);
+
+                            if (c.pdf_path) {
+                                const link = document.createElement('a');
+                                link.href = 'storage/certificates/' + c.pdf_path;
+                                link.target = '_blank';
+                                link.className = 'pm-btn pm-btn-secondary py-1 px-2 small';
+                                link.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+                                row.appendChild(link);
+                            }
+
+                            certsList.appendChild(row);
+                        });
+                    } else {
+                        certsList.innerHTML = '<p class="text-muted small italic">No certificates issued yet.</p>';
+                    }
+                }
+
+                // Swap Loading to Content
+                panelLoading.style.display = 'none';
+                panelContent.style.display = 'flex';
+                console.log("Drawer content populated and rendered successfully.");
+            })
+            .catch(err => {
+                showDetailError(err);
+            });
+    } catch (e) {
+        showDetailError(e);
+    }
+
+    function showDetailError(err) {
+        console.error("openTraineeDetail Error Caught:", err);
+        activeAbortController = null;
+        if (fetchTimerInterval) {
+            clearInterval(fetchTimerInterval);
+            fetchTimerInterval = null;
+        }
+        if (spinner) spinner.style.display = 'none';
+        if (loadingText) {
+            loadingText.innerHTML = `
+                <div class="text-danger mb-3" style="font-size: 0.92rem; line-height: 1.4;">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="mb-2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><br>
+                    <strong>Failed to load profile details:</strong><br>
+                    <span style="font-family: monospace; font-size: 0.8rem; background: rgba(220,53,69,0.06); padding: 4px 8px; border-radius: 4px; display: inline-block; margin-top: 5px; word-break: break-all;">${err.message || err}</span>
+                </div>
+                <button type="button" class="pm-btn pm-btn-secondary px-3 py-1 small" onclick="closeTraineeDetail()">Close Panel</button>
+            `;
+        }
+    }
 }
 
 // Export CSV Function

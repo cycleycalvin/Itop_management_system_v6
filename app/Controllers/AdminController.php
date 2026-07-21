@@ -432,9 +432,61 @@ final class AdminController
     {
         Auth::requireRole(['admin']);
         $certificateModel = new Certificate();
+
+        // AJAX handler for completed trainees without certificates
+        if (isset($_GET['get_completed_course_id'])) {
+            $courseId = (int) $_GET['get_completed_course_id'];
+            $db = \App\Core\Model::getDb();
+            $stmt = $db->prepare('SELECT u.id, u.name, u.email FROM enrolments e JOIN users u ON u.id = e.trainee_id WHERE e.course_id = ? AND e.status = "completed" AND e.attendance_requirement_met = 1 AND e.assessments_completed = 1 AND e.evaluation_submitted = 1 AND u.id NOT IN (SELECT trainee_id FROM certificates WHERE course_id = ? AND status != "revoked")');
+            $stmt->execute([$courseId, $courseId]);
+            header('Content-Type: application/json');
+            echo json_encode($stmt->fetchAll());
+            exit;
+        }
+
+        // Auto-seed default CENTEXS Sarawak template if table is empty
+        $templates = $certificateModel->templates();
+        if (empty($templates)) {
+            $sarawakLayout = json_encode([
+                'style' => [
+                    'template' => 'centexs_sarawak',
+                    'title_color' => '#000000',
+                    'accent_color' => '#aa3338',
+                    'border_color' => '#aa3338',
+                    'seal_color' => '#b53638',
+                    'pattern_opacity' => 0.05,
+                ],
+                'show_seal' => false,
+                'show_verification' => true,
+                'show_watermark' => true,
+                'show_qr' => true,
+                'title' => 'CERTIFICATE OF COMPLETION',
+                'intro' => 'This is to certify that',
+                'intro_script' => 'has successfully completed the training programme for :',
+                'description' => 'Congratulations on your active participation in this program which have equipped you with valuable knowledge and skills on Artificial Intelligence (AI), Ethical Use of AI, Instructional Design Planning, Educational Data Analytics, AI for Visuals and Audio, and AI-Based Tasks.',
+                'signatory_name' => 'Dato Haji Syeed Mohd Hussien Bin Wan Abd Rahman',
+                'signatory_title' => 'Chief Executive Officer',
+                'organization' => 'Centre for Technology Excellence Sarawak',
+                'script_font' => 'Playball'
+            ], JSON_PRETTY_PRINT);
+
+            $certificateModel->saveTemplate([
+                'template_name' => 'CENTEXS Sarawak Certificate of Completion',
+                'background_image' => null,
+                'logo' => null,
+                'signature' => null,
+                'font_family' => 'Inter, sans-serif',
+                'font_size' => 28,
+                'text_color' => '#182230',
+                'layout_json' => $sarawakLayout,
+                'status' => 'active',
+            ]);
+            $templates = $certificateModel->templates();
+        }
+
         View::render('admin/certificates', [
             'certificates' => $certificateModel->records(Security::cleanString($_GET['q'] ?? '')),
-            'templates' => $certificateModel->templates(),
+            'templates' => $templates,
             'activeTemplates' => $certificateModel->activeTemplates(),
             'courses' => (new Course())->all(),
             'trainees' => (new User())->all('', 200, 0, 'trainee', 'active'),
@@ -507,6 +559,64 @@ final class AdminController
         }
         (new Certificate())->approve((int) ($_POST['id'] ?? 0), (int) Auth::id(), $status, Security::cleanString($_POST['remarks'] ?? '', 1000));
         Activity::log(ucfirst($status) . ' certificate');
+        header('Location: index.php?page=admin-certificates');
+    }
+
+    public function certificateLogs(): void
+    {
+        Auth::requireRole(['admin']);
+        $id = (int) ($_GET['id'] ?? 0);
+        $certificateModel = new Certificate();
+        $logs = $certificateModel->getDownloadLogs($id);
+        header('Content-Type: application/json');
+        echo json_encode(['status' => 'success', 'logs' => $logs]);
+        exit;
+    }
+
+    public function bulkIssueCertificates(): void
+    {
+        Auth::requireRole(['admin']);
+        Security::verifyCsrf();
+        $courseId = (int) ($_POST['course_id'] ?? 0);
+        $templateId = (int) ($_POST['template_id'] ?? 0);
+        $traineeIds = $_POST['trainee_ids'] ?? [];
+
+        if ($courseId && !empty($traineeIds)) {
+            $certificateModel = new Certificate();
+            $db = \App\Core\Model::getDb();
+            try {
+                $db->beginTransaction();
+                foreach ($traineeIds as $traineeId) {
+                    $certificateModel->issue([
+                        'course_id' => $courseId,
+                        'trainee_id' => (int) $traineeId,
+                        'template_id' => $templateId,
+                        'certificate_number' => '',
+                        'verification_code' => '',
+                        'pdf_path' => '',
+                        'issue_date' => date('Y-m-d'),
+                        'issued_by' => Auth::id(),
+                        'status' => 'issued',
+                    ]);
+                }
+                $db->commit();
+                Activity::log('Bulk issued certificates for course ID ' . $courseId);
+            } catch (\Exception $e) {
+                $db->rollBack();
+            }
+        }
+        header('Location: index.php?page=admin-certificates');
+    }
+
+    public function revokeCertificate(): void
+    {
+        Auth::requireRole(['admin']);
+        Security::verifyCsrf();
+        $id = (int) ($_POST['id'] ?? 0);
+        if ($id) {
+            (new Certificate())->revoke($id);
+            Activity::log('Revoked certificate ID ' . $id);
+        }
         header('Location: index.php?page=admin-certificates');
     }
 

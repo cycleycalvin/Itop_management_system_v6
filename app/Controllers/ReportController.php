@@ -155,7 +155,9 @@ final class ReportController
             if (!is_dir(CERTIFICATE_PATH)) {
                 @mkdir(CERTIFICATE_PATH, 0755, true);
             }
-            $dompdf = new \Dompdf\Dompdf();
+            $options = new \Dompdf\Options();
+            $options->set('isRemoteEnabled', true);
+            $dompdf = new \Dompdf\Dompdf($options);
             $dompdf->setPaper('A4', 'landscape');
             $dompdf->loadHtml($html);
             $dompdf->render();
@@ -181,35 +183,276 @@ final class ReportController
         echo '<p style="text-align:center;">PDF generation requires <strong>dompdf/dompdf</strong>. Install via Composer: <code>composer require dompdf/dompdf</code></p>';
     }
 
+    public function exportWord(): void
+    {
+        $id = (int) ($_GET['id'] ?? 0);
+        $code = Security::cleanString($_GET['code'] ?? '');
+        $db = Database::connection();
+        if ($id) {
+            $stmt = $db->prepare('SELECT cert.*, u.name AS trainee_name, c.title AS course_title, t.template_id, t.template_name, t.background_image, t.logo, t.signature, t.font_family, t.font_size, t.text_color, t.layout_json FROM certificates cert JOIN users u ON u.id = cert.trainee_id JOIN courses c ON c.id = cert.course_id LEFT JOIN certificate_templates t ON t.template_id = cert.template_id WHERE cert.id = ?');
+            $stmt->execute([$id]);
+        } elseif ($code) {
+            $stmt = $db->prepare('SELECT cert.*, u.name AS trainee_name, c.title AS course_title, t.template_id, t.template_name, t.background_image, t.logo, t.signature, t.font_family, t.font_size, t.text_color, t.layout_json FROM certificates cert JOIN users u ON u.id = cert.trainee_id JOIN courses c ON c.id = cert.course_id LEFT JOIN certificate_templates t ON t.template_id = cert.template_id WHERE cert.verification_code = ?');
+            $stmt->execute([$code]);
+        } else {
+            http_response_code(400);
+            exit('Missing certificate identifier.');
+        }
+
+        $certificate = $stmt->fetch() ?: null;
+        if (!$certificate) {
+            http_response_code(404);
+            exit('Certificate not found.');
+        }
+        if (Auth::role() === 'trainee' && ((int) $certificate['trainee_id'] !== (int) Auth::id() || ($certificate['approval_status'] ?? '') !== 'approved')) {
+            http_response_code(403);
+            exit('Certificate is not available.');
+        }
+
+        $html = $this->certificateWordHtml($certificate);
+
+        $filename = 'certificate_' . ($certificate['certificate_no'] ?? $certificate['id'] ?? time()) . '.doc';
+        
+        header("Content-Type: application/force-download");
+        header("Content-Type: application/msword");
+        header("Expires: 0");
+        header("Cache-Control: must-revalidate, post-check=0, pre-check=0");
+        header("Content-Disposition: attachment; filename=\"$filename\"");
+        
+        // Outputting HTML structure, Word will interpret it as a document.
+        echo $html;
+        exit;
+    }
+
+    private function certificateWordHtml(array $certificate): string
+    {
+        $number = htmlspecialchars((string) ($certificate['certificate_number'] ?? $certificate['certificate_no'] ?? ''), ENT_QUOTES, 'UTF-8');
+        $name = htmlspecialchars((string) ($certificate['trainee_name'] ?? 'Participant Name'), ENT_QUOTES, 'UTF-8');
+        $course = htmlspecialchars((string) ($certificate['course_title'] ?? 'Course Title'), ENT_QUOTES, 'UTF-8');
+        $date = htmlspecialchars((string) ($certificate['issue_date'] ?? $certificate['issued_at'] ?? date('Y-m-d')), ENT_QUOTES, 'UTF-8');
+        $formattedDate = strtoupper(date('d F Y', strtotime($date)));
+
+        $layout = [];
+        if (!empty($certificate['layout_json'])) {
+            $layout = json_decode((string) $certificate['layout_json'], true) ?: [];
+        }
+
+        $title = htmlspecialchars((string) ($layout['title'] ?? 'CERTIFICATE'), ENT_QUOTES, 'UTF-8');
+        $intro = htmlspecialchars((string) ($layout['intro'] ?? 'This is to certify that'), ENT_QUOTES, 'UTF-8');
+        $introScript = htmlspecialchars((string) ($layout['intro_script'] ?? 'has successfully completed the training programme for :'), ENT_QUOTES, 'UTF-8');
+        $description = htmlspecialchars((string) ($layout['description'] ?? 'Congratulations on your active participation in this program...'), ENT_QUOTES, 'UTF-8');
+        $signatoryName = htmlspecialchars((string) ($layout['signatory_name'] ?? 'Dato Haji Syeed Mohd Hussien Bin Wan Abd Rahman'), ENT_QUOTES, 'UTF-8');
+        $signatoryTitle = htmlspecialchars((string) ($layout['signatory_title'] ?? 'Chief Executive Officer'), ENT_QUOTES, 'UTF-8');
+        $organization = htmlspecialchars((string) ($layout['organization'] ?? 'Centre for Technology Excellence Sarawak'), ENT_QUOTES, 'UTF-8');
+        $showWatermark = (bool) ($layout['show_watermark'] ?? true);
+        $showQr = (bool) ($layout['show_qr'] ?? true);
+
+        $textColor = htmlspecialchars((string) ($certificate['text_color'] ?? '#000000'), ENT_QUOTES, 'UTF-8');
+
+        $logoUrl = !empty($certificate['logo']) ? APP_URL . '/storage/uploads/' . $certificate['logo'] : APP_URL . '/public/assets/img/centexs-logo-with-outline-1.png';
+        $sigUrl = !empty($certificate['signature']) ? APP_URL . '/storage/uploads/' . $certificate['signature'] : '';
+        $bgUrl = !empty($certificate['background_image']) ? APP_URL . '/storage/uploads/' . $certificate['background_image'] : APP_URL . '/public/assets/img/centexs-logo-with-outline-1.png';
+
+        $verifyUrl = APP_URL . '/index.php?page=verify-certificate&code=' . urlencode((string) $certificate['verification_code']);
+        $qrCodeSrc = 'https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=' . urlencode($verifyUrl);
+
+        $sigImageHtml = !empty($sigUrl) ? '<img src="' . $sigUrl . '" height="65" style="border: none;">' : '<br><br><br>';
+
+        $bgMarkup = $showWatermark ? ' background="' . $bgUrl . '" style="background-position: center center; background-repeat: no-repeat;"' : '';
+
+        return '
+<html xmlns:v="urn:schemas-microsoft-com:vml"
+xmlns:o="urn:schemas-microsoft-com:office:office"
+xmlns:w="urn:schemas-microsoft-com:office:word"
+xmlns:m="http://schemas.microsoft.com/office/2004/12/omml"
+xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta http-equiv=Content-Type content="text/html; charset=utf-8">
+<meta name=ProgId content=Word.Document>
+<meta name=Generator content="Microsoft Word 15">
+<meta name=Originator content="Microsoft Word 15">
+<!--[if gte mso 9]><xml>
+ <w:WordDocument>
+  <w:View>Print</w:View>
+  <w:Zoom>100</w:Zoom>
+  <w:DoNotOptimizeForBrowser/>
+ </w:WordDocument>
+</xml><![endif]-->
+<style>
+body { font-family: "DejaVu Sans", Helvetica, Arial, sans-serif; color: ' . $textColor . '; text-align: center; }
+</style>
+</head>
+<body' . $bgMarkup . '>
+    <div style="text-align: center;">
+        <img src="' . $logoUrl . '" height="100" style="border: none; margin-bottom: 20px;">
+        
+        <p style="font-size: 42pt; font-weight: bold; margin: 0; padding: 0;">CERTIFICATE</p>
+        <p style="font-size: 20pt; font-weight: bold; margin: 0; padding: 0;">OF COMPLETION</p>
+        <br>
+        
+        <p style="font-size: 14pt; font-weight: bold;">' . $intro . '</p>
+        
+        <p style="font-size: 22pt; font-weight: bold; text-transform: uppercase;">' . $name . '</p>
+        
+        <p style="font-size: 18pt; font-family: \'Brush Script MT\', \'Monotype Corsiva\', cursive; font-style: italic;">' . $introScript . '</p>
+        
+        <p style="font-size: 18pt; font-weight: bold; text-transform: uppercase;">' . $course . '</p>
+        <p style="font-size: 12pt; font-weight: bold;">(' . $formattedDate . ')</p>
+        
+        <p style="font-size: 11pt; line-height: 1.5; margin: 0 10%;">' . $description . '</p>
+        
+        <br><br>
+        
+        <table width="100%" border="0" cellpadding="0" cellspacing="0" style="margin-top: 30px;">
+            <tr>
+                <td width="30%" align="center" valign="bottom">
+                    ' . ($showQr ? '
+                    <img src="' . $qrCodeSrc . '" width="70" height="70" style="border: none;">
+                    <p style="font-size: 8pt; font-weight: bold; margin: 2px 0;">Certificate No.</p>
+                    <p style="font-size: 9pt; font-weight: bold; margin: 0;">' . $number . '</p>
+                    ' : '') . '
+                </td>
+                <td width="40%" align="center" valign="bottom">
+                    ' . $sigImageHtml . '
+                    <div style="border-top: 1px solid black; width: 80%; margin: 5px auto; padding-top: 5px;">
+                        <p style="font-size: 11pt; font-weight: bold; margin: 0;">' . $signatoryName . '</p>
+                        <p style="font-size: 10pt; margin: 0;">' . $signatoryTitle . '</p>
+                        <p style="font-size: 9pt; margin: 0;">' . $organization . '</p>
+                    </div>
+                </td>
+                <td width="30%"></td>
+            </tr>
+        </table>
+    </div>
+</body>
+</html>';
+    }
+
     private function certificatePdfHtml(array $certificate): string
     {
         $number = htmlspecialchars((string) ($certificate['certificate_number'] ?? $certificate['certificate_no'] ?? ''), ENT_QUOTES, 'UTF-8');
         $name = htmlspecialchars((string) ($certificate['trainee_name'] ?? 'Participant Name'), ENT_QUOTES, 'UTF-8');
         $course = htmlspecialchars((string) ($certificate['course_title'] ?? 'Course Title'), ENT_QUOTES, 'UTF-8');
         $date = htmlspecialchars((string) ($certificate['issue_date'] ?? $certificate['issued_at'] ?? date('Y-m-d')), ENT_QUOTES, 'UTF-8');
+        $formattedDate = strtoupper(date('d F Y', strtotime($date)));
+
+        $layout = [];
+        if (!empty($certificate['layout_json'])) {
+            $layout = json_decode((string) $certificate['layout_json'], true) ?: [];
+        }
+
+        $style = $layout['style'] ?? [];
+        $title = htmlspecialchars((string) ($layout['title'] ?? 'CERTIFICATE'), ENT_QUOTES, 'UTF-8');
+        $intro = htmlspecialchars((string) ($layout['intro'] ?? 'This is to certify that'), ENT_QUOTES, 'UTF-8');
+        $introScript = htmlspecialchars((string) ($layout['intro_script'] ?? 'has successfully completed the training programme for :'), ENT_QUOTES, 'UTF-8');
+        $description = htmlspecialchars((string) ($layout['description'] ?? 'Congratulations on your active participation in this program which have equipped you with valuable knowledge and skills on Artificial Intelligence (AI), Ethical Use of AI, Instructional Design Planning, Educational Data Analytics, AI for Visuals and Audio, and AI-Based Tasks.'), ENT_QUOTES, 'UTF-8');
+        $signatoryName = htmlspecialchars((string) ($layout['signatory_name'] ?? 'Dato Haji Syeed Mohd Hussien Bin Wan Abd Rahman'), ENT_QUOTES, 'UTF-8');
+        $signatoryTitle = htmlspecialchars((string) ($layout['signatory_title'] ?? 'Chief Executive Officer'), ENT_QUOTES, 'UTF-8');
+        $organization = htmlspecialchars((string) ($layout['organization'] ?? 'Centre for Technology Excellence Sarawak'), ENT_QUOTES, 'UTF-8');
+        $showWatermark = (bool) ($layout['show_watermark'] ?? true);
+        $showQr = (bool) ($layout['show_qr'] ?? true);
+
+        $textColor = htmlspecialchars((string) ($certificate['text_color'] ?? '#000000'), ENT_QUOTES, 'UTF-8');
+        $accentColor = htmlspecialchars((string) ($style['accent_color'] ?? '#aa3338'), ENT_QUOTES, 'UTF-8');
+        $patternOpacity = (float) ($style['pattern_opacity'] ?? 0.08);
+
+        // Map web URLs for Dompdf rendering to bypass local directory chroot restrictions
+        $logoUrl = !empty($certificate['logo']) ? APP_URL . '/storage/uploads/' . $certificate['logo'] : APP_URL . '/public/assets/img/centexs-logo-with-outline-1.png';
+        $sigUrl = !empty($certificate['signature']) ? APP_URL . '/storage/uploads/' . $certificate['signature'] : '';
+        $bgUrl = !empty($certificate['background_image']) ? APP_URL . '/storage/uploads/' . $certificate['background_image'] : APP_URL . '/public/assets/img/centexs-logo-with-outline-1.png';
+
+        $verifyUrl = APP_URL . '/index.php?page=verify-certificate&code=' . urlencode((string) $certificate['verification_code']);
+        $qrCodeSrc = 'https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=' . urlencode($verifyUrl);
+
+        $sigImageHtml = '';
+        if (!empty($sigUrl)) {
+            $sigImageHtml = '<img src="' . $sigUrl . '" style="height: 65px; display: block; margin: 0 auto; border: none;">';
+        } else {
+            $sigImageHtml = '<div style="height: 40px;"></div>'; // spacer if no signature
+        }
+
         return '<!doctype html><html><head><meta charset="utf-8"><style>
-            @page { margin: 24px; }
-            body { font-family: DejaVu Sans, Arial, sans-serif; color: #182230; }
-            .cert { border: 10px double #25566a; padding: 42px; height: 430px; text-align: center; }
-            .title { color: #aa3338; font-size: 38px; font-weight: bold; margin-top: 28px; }
-            .name { font-size: 30px; margin: 28px 0 18px; color: #000; }
-            .intro { color: #244f63; font-size: 15px; }
-            .course { color: #aa3338; font-size: 24px; margin: 14px auto; max-width: 760px; }
-            .seal { border: 4px solid #b53638; border-radius: 50%; width: 96px; height: 96px; margin: 26px auto 10px; display: table; color: #244f63; }
-            .seal span { display: table-cell; vertical-align: middle; font-weight: bold; font-size: 20px; }
-            .footer { margin-top: 32px; display: table; width: 100%; font-size: 12px; color: #244f63; }
-            .left, .right { display: table-cell; width: 50%; }
-            .left { text-align: left; }
-            .right { text-align: right; }
-            .line { border-top: 1px solid #182230; width: 180px; margin-left: auto; margin-bottom: 8px; }
-        </style></head><body><div class="cert">
-            <div class="title">CENTEXS Certification</div>
-            <div class="name">' . $name . '</div>
-            <div class="intro">has successfully completed the required training and assessment for</div>
-            <div class="course">' . $course . '</div>
-            <div class="seal"><span>ITOP<br>Certified</span></div>
-            <div class="intro">Issued On <strong>' . $date . '</strong></div>
-            <div class="footer"><div class="left">Certificate No.<br><strong>' . $number . '</strong></div><div class="right"><div class="line"></div><strong>Authorized Signatory</strong><br>CENTEXS</div></div>
-        </div></body></html>';
+            @page { size: A4 portrait; margin: 0; }
+            html, body { margin: 0; padding: 0; background: #fff; font-family: DejaVu Sans, Helvetica, Arial, sans-serif; color: ' . $textColor . '; }
+            
+            .watermark { 
+                position: absolute; 
+                top: 75mm; 
+                left: 35mm; 
+                width: 140mm; 
+                height: 140mm; 
+                opacity: ' . $patternOpacity . '; 
+                text-align: center; 
+                z-index: -1; 
+            }
+            .watermark img { width: 100%; height: 100%; object-fit: contain; }
+            
+            .content {
+                padding-top: 30mm;
+                text-align: center;
+                position: relative;
+                z-index: 1;
+            }
+            
+            .footer {
+                position: absolute;
+                bottom: 25mm;
+                left: 15mm;
+                width: 180mm;
+                z-index: 2;
+            }
+        </style></head><body>
+            
+            ' . ($showWatermark ? '<div class="watermark"><img src="' . $bgUrl . '"></div>' : '') . '
+            
+            <div class="content">
+                <img src="' . $logoUrl . '" style="height: 80px; display: inline-block; border: none; margin-bottom: 20px;">
+                
+                <div style="font-size: 52px; font-weight: 900; line-height: 1.1; margin: 0;">CERTIFICATE</div>
+                <div style="font-size: 28px; font-weight: bold; margin: 0 0 20px 0;">OF COMPLETION</div>
+                
+                <div style="font-size: 16px; margin: 0 0 25px 0; font-weight: bold;">' . $intro . '</div>
+                
+                <div style="font-size: 26px; font-weight: bold; text-transform: uppercase; margin: 0 0 25px 0;">' . $name . '</div>
+                
+                <div style="font-size: 24px; margin: 0 0 20px 0; font-family: \'Brush Script MT\', \'Lucida Handwriting\', \'Monotype Corsiva\', \'Times New Roman\', serif; font-style: italic;">' . $introScript . '</div>
+                
+                <div style="font-size: 22px; font-weight: bold; text-transform: uppercase; margin: 0 0 5px 0;">' . $course . '</div>
+                <div style="font-size: 16px; font-weight: bold; margin: 0 0 25px 0;">(' . $formattedDate . ')</div>
+                
+                <div style="font-size: 14px; line-height: 1.5; max-width: 85%; margin: 0 auto;">' . $description . '</div>
+            </div>
+            
+            <div class="footer">
+                <table style="width: 100%; border: none; border-collapse: collapse; margin: 0;">
+                    <tr>
+                        ' . ($showQr ? '<td style="width: 30%; text-align: left; vertical-align: bottom; padding: 0; border: none;">
+                            <img src="' . $qrCodeSrc . '" style="width: 70px; height: 70px; display: block; border: none; margin-bottom: 5px;">
+                            <div style="font-size: 10px; color: ' . $accentColor . '; font-weight: bold; margin-bottom: 2px;">Certificate No.</div>
+                            <strong style="font-size: 11px; display: block;">' . $number . '</strong>
+                        </td>' : '') . '
+                        
+                        <td style="width: ' . ($showQr ? '40%' : '100%') . '; text-align: center; vertical-align: bottom; padding: 0; border: none;">
+                            <table style="margin: 0 auto; border: none; border-collapse: collapse; width: 260px; text-align: center;">
+                                <tr>
+                                    <td style="text-align: center; padding: 0 0 5px 0; border: none;">
+                                        ' . $sigImageHtml . '
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="border: none; border-top: 2px solid #000; padding: 8px 0 0 0; text-align: center; line-height: 1.2;">
+                                        <strong style="font-size: 14px; display: block; margin-bottom: 3px;">' . $signatoryName . '</strong>
+                                        <span style="font-size: 12px; display: block; color: #333; margin-bottom: 2px;">' . $signatoryTitle . '</span>
+                                        <span style="font-size: 11px; display: block; color: #555;">' . $organization . '</span>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                        
+                        ' . ($showQr ? '<td style="width: 30%; border: none;"></td>' : '') . '
+                    </tr>
+                </table>
+            </div>
+        </body></html>';
     }
 }
