@@ -39,6 +39,7 @@ final class ReportController
             'assignments' => $db->query('SELECT c.title, COUNT(a.id) AS assignments, COUNT(s.id) AS submissions, SUM(s.status = "graded") AS graded FROM courses c LEFT JOIN assignments a ON a.course_id = c.id LEFT JOIN assignment_submissions s ON s.assignment_id = a.id' . $whereSql . ' GROUP BY c.id ORDER BY c.title')->fetchAll(),
             'evaluations' => $db->query('SELECT c.title, ROUND(AVG(e.rating), 2) AS avg_rating, COUNT(e.id) AS responses FROM courses c LEFT JOIN evaluations e ON e.course_id = c.id' . $whereSql . ' GROUP BY c.id ORDER BY c.title')->fetchAll(),
             'certificates' => $db->query('SELECT c.title, COUNT(cert.id) AS total, SUM(cert.approval_status = "approved") AS approved, SUM(cert.approval_status = "pending") AS pending FROM courses c LEFT JOIN certificates cert ON cert.course_id = c.id' . $whereSql . ' GROUP BY c.id ORDER BY c.title')->fetchAll(),
+            'master_data_stats' => $db->query('SELECT ts.*, a.code AS academy_code, a.name AS academy_name, c.title AS course_title FROM training_statistics ts JOIN academies a ON a.id = ts.academy_id LEFT JOIN courses c ON c.id = ts.course_id ORDER BY a.code, ts.participants DESC')->fetchAll(),
             'academyId' => $academy,
             'courseId' => $course,
         ]);
@@ -47,13 +48,62 @@ final class ReportController
     public function exportCsv(): void
     {
         Auth::requireRole(['admin', 'instructor']);
-        $rows = Database::connection()->query('SELECT c.title, COUNT(e.id) AS total, SUM(e.status = "completed") AS completed FROM courses c LEFT JOIN enrolments e ON e.course_id = c.id GROUP BY c.id ORDER BY c.title')->fetchAll();
+        $db = Database::connection();
         $format = Security::cleanString($_GET['format'] ?? 'csv');
+        $reportType = Security::cleanString($_GET['report_type'] ?? 'completion');
+
+        $rows = [];
+        $headers = [];
+        $title = 'ITOP Training Report';
+
+        switch ($reportType) {
+            case 'attendance':
+                $title = 'Attendance Report';
+                $headers = ['Course', 'Attendance Rate (%)', 'Total Records'];
+                $data = $db->query('SELECT c.title, ROUND(AVG(att.status = "present") * 100, 0) AS attendance_rate, COUNT(att.id) AS records FROM courses c LEFT JOIN enrolments e ON e.course_id = c.id LEFT JOIN attendance att ON att.enrolment_id = e.id GROUP BY c.id ORDER BY c.title')->fetchAll();
+                foreach ($data as $row) {
+                    $rows[] = [$row['title'], $row['attendance_rate'], $row['records']];
+                }
+                break;
+            case 'certificates':
+                $title = 'Certificates Report';
+                $headers = ['Course', 'Total Certificates', 'Approved', 'Pending'];
+                $data = $db->query('SELECT c.title, COUNT(cert.id) AS total, SUM(cert.approval_status = "approved") AS approved, SUM(cert.approval_status = "pending") AS pending FROM courses c LEFT JOIN certificates cert ON cert.course_id = c.id GROUP BY c.id ORDER BY c.title')->fetchAll();
+                foreach ($data as $row) {
+                    $rows[] = [$row['title'], (int)$row['total'], (int)$row['approved'], (int)$row['pending']];
+                }
+                break;
+            case 'master_data':
+                $title = 'Master Data Statistics Report';
+                $headers = ['Academy', 'Course Name', 'Participants'];
+                $data = $db->query('SELECT a.code AS academy_code, ts.course_name, ts.participants FROM training_statistics ts JOIN academies a ON a.id = ts.academy_id ORDER BY a.code, ts.participants DESC')->fetchAll();
+                foreach ($data as $row) {
+                    $rows[] = [$row['academy_code'], $row['course_name'], $row['participants']];
+                }
+                break;
+            case 'completion':
+            default:
+                $title = 'Course Completion Report';
+                $headers = ['Course', 'Total Participants', 'Completed', 'Completion Rate (%)'];
+                $data = $db->query('SELECT c.title, COUNT(e.id) AS total, SUM(e.status = "completed") AS completed, ROUND((SUM(e.status = "completed") / GREATEST(COUNT(e.id), 1)) * 100, 0) AS rate FROM courses c LEFT JOIN enrolments e ON e.course_id = c.id GROUP BY c.id ORDER BY c.title')->fetchAll();
+                foreach ($data as $row) {
+                    $rows[] = [$row['title'], (int)$row['total'], (int)$row['completed'], $row['rate']];
+                }
+                break;
+        }
 
         if ($format === 'pdf' && class_exists('Dompdf\\Dompdf')) {
-            $html = '<h1>ITOP Training Report</h1><table width="100%" border="1" cellspacing="0" cellpadding="6"><thead><tr><th>Course</th><th>Total Participants</th><th>Completed</th></tr></thead><tbody>';
+            $html = '<h1>' . Security::e($title) . '</h1><table width="100%" border="1" cellspacing="0" cellpadding="6"><thead><tr>';
+            foreach ($headers as $header) {
+                $html .= '<th>' . Security::e($header) . '</th>';
+            }
+            $html .= '</tr></thead><tbody>';
             foreach ($rows as $row) {
-                $html .= '<tr><td>' . Security::e($row['title']) . '</td><td>' . (int) $row['total'] . '</td><td>' . (int) $row['completed'] . '</td></tr>';
+                $html .= '<tr>';
+                foreach ($row as $col) {
+                    $html .= '<td>' . Security::e((string)$col) . '</td>';
+                }
+                $html .= '</tr>';
             }
             $html .= '</tbody></table>';
             $dompdf = new \Dompdf\Dompdf();
@@ -69,9 +119,9 @@ final class ReportController
         header('Content-Type: ' . ($format === 'excel' ? 'application/vnd.ms-excel' : 'text/csv'));
         header('Content-Disposition: attachment; filename="itop-report.' . ($format === 'excel' ? 'xls' : 'csv') . '"');
         $out = fopen('php://output', 'w');
-        fputcsv($out, ['Course', 'Total Participants', 'Completed']);
+        fputcsv($out, $headers);
         foreach ($rows as $row) {
-            fputcsv($out, [$row['title'], $row['total'], $row['completed']]);
+            fputcsv($out, $row);
         }
         fclose($out);
     }
@@ -226,9 +276,10 @@ final class ReportController
 
     private function certificateWordHtml(array $certificate): string
     {
-        $number = htmlspecialchars((string) ($certificate['certificate_number'] ?? $certificate['certificate_no'] ?? ''), ENT_QUOTES, 'UTF-8');
-        $name = htmlspecialchars((string) ($certificate['trainee_name'] ?? 'Participant Name'), ENT_QUOTES, 'UTF-8');
-        $course = htmlspecialchars((string) ($certificate['course_title'] ?? 'Course Title'), ENT_QUOTES, 'UTF-8');
+        $number = htmlspecialchars((string) (!empty($certificate['certificate_number']) ? $certificate['certificate_number'] : (!empty($certificate['certificate_no']) ? $certificate['certificate_no'] : '')), ENT_QUOTES, 'UTF-8');
+        $rawName = !empty($certificate['trainee_name']) ? $certificate['trainee_name'] : 'Participant Name';
+        $name = htmlspecialchars((string) $rawName, ENT_QUOTES, 'UTF-8');
+        $course = htmlspecialchars((string) (!empty($certificate['course_title']) ? $certificate['course_title'] : 'Course Title'), ENT_QUOTES, 'UTF-8');
         $date = htmlspecialchars((string) ($certificate['issue_date'] ?? $certificate['issued_at'] ?? date('Y-m-d')), ENT_QUOTES, 'UTF-8');
         $formattedDate = strtoupper(date('d F Y', strtotime($date)));
 
@@ -256,15 +307,68 @@ final class ReportController
         $verifyUrl = APP_URL . '/index.php?page=verify-certificate&code=' . urlencode((string) $certificate['verification_code']);
         $qrCodeSrc = 'https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=' . urlencode($verifyUrl);
 
-        $sigImageHtml = !empty($sigUrl) ? '<img src="' . $sigUrl . '" height="65" style="border: none;">' : '<br><br><br>';
+        // Get actual logo size to prevent stretching in Word
+        $logoPath = !empty($certificate['logo']) ? dirname(__DIR__, 2) . '/storage/uploads/' . $certificate['logo'] : dirname(__DIR__, 2) . '/public/assets/img/centexs-logo-with-outline-1.png';
+        $logoImg = '<img src="' . $logoUrl . '" style="height: 160px; width: auto; border: none; margin-bottom: 20px;">';
+        if (file_exists($logoPath)) {
+            $size = @getimagesize($logoPath);
+            if ($size && $size[1] > 0) {
+                $ratio = $size[0] / $size[1];
+                $targetHeight = 160;
+                $targetWidth = round($targetHeight * $ratio);
+                $logoImg = '<img src="' . $logoUrl . '" width="' . $targetWidth . '" height="' . $targetHeight . '" style="width: ' . $targetWidth . 'px; height: ' . $targetHeight . 'px; border: none; margin-bottom: 20px;">';
+            }
+        }
 
-        $bgMarkup = $showWatermark ? ' background="' . $bgUrl . '" style="background-position: center center; background-repeat: no-repeat;"' : '';
+        // Signature size
+        $sigImgHtml = '<br><br><br>';
+        if (!empty($sigUrl)) {
+            $sigPath = dirname(__DIR__, 2) . '/storage/uploads/' . $certificate['signature'];
+            if (file_exists($sigPath)) {
+                $size = @getimagesize($sigPath);
+                if ($size && $size[1] > 0) {
+                    $ratio = $size[0] / $size[1];
+                    $targetHeight = 90;
+                    $targetWidth = round($targetHeight * $ratio);
+                    $sigImgHtml = '<img src="' . $sigUrl . '" width="' . $targetWidth . '" height="' . $targetHeight . '" style="border: none;">';
+                }
+            } else {
+                $sigImgHtml = '<img src="' . $sigUrl . '" height="90" style="border: none;">';
+            }
+        }
+
+        $vmlWatermark = '';
+        if ($showWatermark && !empty($bgUrl)) {
+            $bgWidth = 450;
+            $bgHeight = 450;
+            $bgPath = !empty($certificate['background_image']) ? dirname(__DIR__, 2) . '/storage/uploads/' . $certificate['background_image'] : dirname(__DIR__, 2) . '/public/assets/img/centexs-logo-with-outline-1.png';
+            if (file_exists($bgPath)) {
+                $size = @getimagesize($bgPath);
+                if ($size && $size[1] > 0) {
+                    $ratio = $size[0] / $size[1];
+                    $bgHeight = 450;
+                    $bgWidth = round($bgHeight * $ratio);
+                }
+            }
+            $vmlWatermark = '
+            <!--[if gte vml 1]>
+            <w:pict>
+                <v:rect id="watermark"
+                    style="position:absolute;z-index:-1;width:' . $bgWidth . 'pt;height:' . $bgHeight . 'pt;
+                    mso-position-horizontal:center;mso-position-horizontal-relative:margin;
+                    mso-position-vertical:center;mso-position-vertical-relative:margin;"
+                    stroked="f">
+                    <v:fill src="' . $bgUrl . '" type="frame" opacity="0.15"/>
+                </v:rect>
+            </w:pict>
+            <![endif]-->';
+        }
 
         return '
 <html xmlns:v="urn:schemas-microsoft-com:vml"
 xmlns:o="urn:schemas-microsoft-com:office:office"
 xmlns:w="urn:schemas-microsoft-com:office:word"
-xmlns:m="http://schemas.microsoft.com/office/2004/12/omml"
+xmlns:m="http://schemas-microsoft.com/office/2004/12/omml"
 xmlns="http://www.w3.org/TR/REC-html40">
 <head>
 <meta http-equiv=Content-Type content="text/html; charset=utf-8">
@@ -279,48 +383,47 @@ xmlns="http://www.w3.org/TR/REC-html40">
  </w:WordDocument>
 </xml><![endif]-->
 <style>
-body { font-family: "DejaVu Sans", Helvetica, Arial, sans-serif; color: ' . $textColor . '; text-align: center; }
+body { font-family: "Arial", sans-serif; color: ' . $textColor . '; text-align: center; background-color: white; }
+p { margin: 0; padding: 0; }
 </style>
 </head>
-<body' . $bgMarkup . '>
-    <div style="text-align: center;">
-        <img src="' . $logoUrl . '" height="100" style="border: none; margin-bottom: 20px;">
+<body style="text-align: center;">
+    ' . $vmlWatermark . '
+    <div style="text-align: center; margin-top: 20px;">
+        ' . $logoImg . '
         
-        <p style="font-size: 42pt; font-weight: bold; margin: 0; padding: 0;">CERTIFICATE</p>
-        <p style="font-size: 20pt; font-weight: bold; margin: 0; padding: 0;">OF COMPLETION</p>
-        <br>
+        <p style="font-size: 38pt; font-weight: bold; margin-top: 10px;">CERTIFICATE</p>
+        <p style="font-size: 20pt; font-weight: bold; margin-bottom: 20px;">OF COMPLETION</p>
         
-        <p style="font-size: 14pt; font-weight: bold;">' . $intro . '</p>
+        <p style="font-size: 14pt; font-weight: bold; margin-bottom: 20px;">' . $intro . '</p>
         
-        <p style="font-size: 22pt; font-weight: bold; text-transform: uppercase;">' . $name . '</p>
+        <p style="font-size: 22pt; font-weight: bold; text-transform: uppercase; margin-bottom: 20px;">' . $name . '</p>
         
-        <p style="font-size: 18pt; font-family: \'Brush Script MT\', \'Monotype Corsiva\', cursive; font-style: italic;">' . $introScript . '</p>
+        <p style="font-size: 16pt; font-family: \'Brush Script MT\', \'Monotype Corsiva\', cursive; font-style: italic; margin-bottom: 20px;">' . $introScript . '</p>
         
-        <p style="font-size: 18pt; font-weight: bold; text-transform: uppercase;">' . $course . '</p>
-        <p style="font-size: 12pt; font-weight: bold;">(' . $formattedDate . ')</p>
+        <p style="font-size: 18pt; font-weight: bold; text-transform: uppercase; margin-bottom: 5px;">' . $course . '</p>
+        <p style="font-size: 12pt; font-weight: bold; margin-bottom: 20px;">(' . $formattedDate . ')</p>
         
-        <p style="font-size: 11pt; line-height: 1.5; margin: 0 10%;">' . $description . '</p>
+        <div style="font-size: 11pt; line-height: 1.5; margin: 0 10%; margin-bottom: 40px;">' . $description . '</div>
         
-        <br><br>
-        
-        <table width="100%" border="0" cellpadding="0" cellspacing="0" style="margin-top: 30px;">
+        <table width="100%" border="0" cellpadding="0" cellspacing="0" style="margin-top: 40px;">
             <tr>
-                <td width="30%" align="center" valign="bottom">
+                <td width="25%" align="left" valign="bottom">
                     ' . ($showQr ? '
-                    <img src="' . $qrCodeSrc . '" width="70" height="70" style="border: none;">
-                    <p style="font-size: 8pt; font-weight: bold; margin: 2px 0;">Certificate No.</p>
-                    <p style="font-size: 9pt; font-weight: bold; margin: 0;">' . $number . '</p>
+                    <img src="' . $qrCodeSrc . '" width="90" height="90" style="border: none;">
+                    <p style="font-size: 8pt; font-weight: bold; margin-top: 5px;">Certificate No.</p>
+                    <p style="font-size: 9pt; font-weight: bold;">' . $number . '</p>
                     ' : '') . '
                 </td>
-                <td width="40%" align="center" valign="bottom">
-                    ' . $sigImageHtml . '
-                    <div style="border-top: 1px solid black; width: 80%; margin: 5px auto; padding-top: 5px;">
-                        <p style="font-size: 11pt; font-weight: bold; margin: 0;">' . $signatoryName . '</p>
-                        <p style="font-size: 10pt; margin: 0;">' . $signatoryTitle . '</p>
-                        <p style="font-size: 9pt; margin: 0;">' . $organization . '</p>
+                <td width="50%" align="center" valign="bottom">
+                    ' . $sigImgHtml . '
+                    <div style="border-top: 1.5px solid black; width: 350px; margin: 5px auto 0 auto; padding-top: 5px;">
+                        <p style="font-size: 11pt; font-weight: bold;">' . $signatoryName . '</p>
+                        <p style="font-size: 10pt;">' . $signatoryTitle . '</p>
+                        <p style="font-size: 9pt; color: #555;">' . $organization . '</p>
                     </div>
                 </td>
-                <td width="30%"></td>
+                <td width="25%"></td>
             </tr>
         </table>
     </div>
@@ -330,9 +433,10 @@ body { font-family: "DejaVu Sans", Helvetica, Arial, sans-serif; color: ' . $tex
 
     private function certificatePdfHtml(array $certificate): string
     {
-        $number = htmlspecialchars((string) ($certificate['certificate_number'] ?? $certificate['certificate_no'] ?? ''), ENT_QUOTES, 'UTF-8');
-        $name = htmlspecialchars((string) ($certificate['trainee_name'] ?? 'Participant Name'), ENT_QUOTES, 'UTF-8');
-        $course = htmlspecialchars((string) ($certificate['course_title'] ?? 'Course Title'), ENT_QUOTES, 'UTF-8');
+        $number = htmlspecialchars((string) (!empty($certificate['certificate_number']) ? $certificate['certificate_number'] : (!empty($certificate['certificate_no']) ? $certificate['certificate_no'] : '')), ENT_QUOTES, 'UTF-8');
+        $rawName = !empty($certificate['trainee_name']) ? $certificate['trainee_name'] : 'Participant Name';
+        $name = htmlspecialchars((string) $rawName, ENT_QUOTES, 'UTF-8');
+        $course = htmlspecialchars((string) (!empty($certificate['course_title']) ? $certificate['course_title'] : 'Course Title'), ENT_QUOTES, 'UTF-8');
         $date = htmlspecialchars((string) ($certificate['issue_date'] ?? $certificate['issued_at'] ?? date('Y-m-d')), ENT_QUOTES, 'UTF-8');
         $formattedDate = strtoupper(date('d F Y', strtotime($date)));
 
@@ -354,7 +458,7 @@ body { font-family: "DejaVu Sans", Helvetica, Arial, sans-serif; color: ' . $tex
 
         $textColor = htmlspecialchars((string) ($certificate['text_color'] ?? '#000000'), ENT_QUOTES, 'UTF-8');
         $accentColor = htmlspecialchars((string) ($style['accent_color'] ?? '#aa3338'), ENT_QUOTES, 'UTF-8');
-        $patternOpacity = (float) ($style['pattern_opacity'] ?? 0.08);
+        $patternOpacity = (float) ($style['pattern_opacity'] ?? 0.15);
 
         // Map web URLs for Dompdf rendering to bypass local directory chroot restrictions
         $logoUrl = !empty($certificate['logo']) ? APP_URL . '/storage/uploads/' . $certificate['logo'] : APP_URL . '/public/assets/img/centexs-logo-with-outline-1.png';
@@ -366,9 +470,9 @@ body { font-family: "DejaVu Sans", Helvetica, Arial, sans-serif; color: ' . $tex
 
         $sigImageHtml = '';
         if (!empty($sigUrl)) {
-            $sigImageHtml = '<img src="' . $sigUrl . '" style="height: 65px; display: block; margin: 0 auto; border: none;">';
+            $sigImageHtml = '<img src="' . $sigUrl . '" style="height: 90px; display: block; margin: 0 auto; border: none;">';
         } else {
-            $sigImageHtml = '<div style="height: 40px;"></div>'; // spacer if no signature
+            $sigImageHtml = '<div style="height: 60px;"></div>'; // spacer if no signature
         }
 
         return '<!doctype html><html><head><meta charset="utf-8"><style>
@@ -406,7 +510,7 @@ body { font-family: "DejaVu Sans", Helvetica, Arial, sans-serif; color: ' . $tex
             ' . ($showWatermark ? '<div class="watermark"><img src="' . $bgUrl . '"></div>' : '') . '
             
             <div class="content">
-                <img src="' . $logoUrl . '" style="height: 80px; display: inline-block; border: none; margin-bottom: 20px;">
+                <img src="' . $logoUrl . '" style="height: 160px; display: inline-block; border: none; margin-bottom: 20px;">
                 
                 <div style="font-size: 52px; font-weight: 900; line-height: 1.1; margin: 0;">CERTIFICATE</div>
                 <div style="font-size: 28px; font-weight: bold; margin: 0 0 20px 0;">OF COMPLETION</div>
@@ -426,21 +530,21 @@ body { font-family: "DejaVu Sans", Helvetica, Arial, sans-serif; color: ' . $tex
             <div class="footer">
                 <table style="width: 100%; border: none; border-collapse: collapse; margin: 0;">
                     <tr>
-                        ' . ($showQr ? '<td style="width: 30%; text-align: left; vertical-align: bottom; padding: 0; border: none;">
-                            <img src="' . $qrCodeSrc . '" style="width: 70px; height: 70px; display: block; border: none; margin-bottom: 5px;">
+                        ' . ($showQr ? '<td style="width: 25%; text-align: left; vertical-align: bottom; padding: 0; border: none;">
+                            <img src="' . $qrCodeSrc . '" style="width: 90px; height: 90px; display: block; border: none; margin-bottom: 5px;">
                             <div style="font-size: 10px; color: ' . $accentColor . '; font-weight: bold; margin-bottom: 2px;">Certificate No.</div>
                             <strong style="font-size: 11px; display: block;">' . $number . '</strong>
-                        </td>' : '') . '
+                        </td>' : '<td style="width: 25%; border: none;"></td>') . '
                         
-                        <td style="width: ' . ($showQr ? '40%' : '100%') . '; text-align: center; vertical-align: bottom; padding: 0; border: none;">
-                            <table style="margin: 0 auto; border: none; border-collapse: collapse; width: 260px; text-align: center;">
+                        <td style="width: 50%; text-align: center; vertical-align: bottom; padding: 0; border: none;">
+                            <table style="margin: 0 auto; border: none; border-collapse: collapse; width: 350px; text-align: center;">
                                 <tr>
                                     <td style="text-align: center; padding: 0 0 5px 0; border: none;">
                                         ' . $sigImageHtml . '
                                     </td>
                                 </tr>
                                 <tr>
-                                    <td style="border: none; border-top: 2px solid #000; padding: 8px 0 0 0; text-align: center; line-height: 1.2;">
+                                    <td style="border: none; border-top: 1.5px solid #000; padding: 8px 0 0 0; text-align: center; line-height: 1.2;">
                                         <strong style="font-size: 14px; display: block; margin-bottom: 3px;">' . $signatoryName . '</strong>
                                         <span style="font-size: 12px; display: block; color: #333; margin-bottom: 2px;">' . $signatoryTitle . '</span>
                                         <span style="font-size: 11px; display: block; color: #555;">' . $organization . '</span>
@@ -449,7 +553,7 @@ body { font-family: "DejaVu Sans", Helvetica, Arial, sans-serif; color: ' . $tex
                             </table>
                         </td>
                         
-                        ' . ($showQr ? '<td style="width: 30%; border: none;"></td>' : '') . '
+                        ' . ($showQr ? '<td style="width: 25%; border: none;"></td>' : '') . '
                     </tr>
                 </table>
             </div>

@@ -361,9 +361,10 @@ $classicLayout = json_encode([
                                 </td>
                                 <td>
                                     <div class="pm-table-avatar-cell">
-                                        <div class="pm-avatar-small"><?= strtoupper(substr($cert['trainee_name'] ?? 'T', 0, 1)) ?></div>
+                                        <?php $displayTraineeName = !empty($cert['trainee_name']) ? $cert['trainee_name'] : 'Participant Name'; ?>
+                                        <div class="pm-avatar-small"><?= strtoupper(substr($displayTraineeName, 0, 1)) ?></div>
                                         <div>
-                                            <strong style="display:block;"><?= Security::e($cert['trainee_name']) ?></strong>
+                                            <strong style="display:block;"><?= Security::e($displayTraineeName) ?></strong>
                                         </div>
                                     </div>
                                 </td>

@@ -1,11 +1,15 @@
-<?php use App\Core\Security; use App\Core\View; ?>
+<?php use App\Core\Security;
+use App\Core\View; ?>
 <?php View::partial('partials/role-nav'); ?>
 <div class="profile-hero overview-panel mb-4 animate-in">
-    <div class="profile-avatar" onclick="document.getElementById('avatarFileInput').click()" style="width: 120px; height: 120px; min-width: 120px; min-height: 120px; max-width: 120px; max-height: 120px; border-radius: 18px; border: 4px solid #ffffff; outline: 2px solid #e2e8f0; box-shadow: 0 8px 20px rgba(0,0,0,0.15); position: relative; overflow: hidden; cursor: pointer; flex-shrink: 0; background: #ffffff;">
+    <div class="profile-avatar" onclick="document.getElementById('avatarFileInput').click()"
+        style="width: 120px; height: 120px; min-width: 120px; min-height: 120px; max-width: 120px; max-height: 120px; border-radius: 18px; border: 4px solid #ffffff; outline: 2px solid #e2e8f0; box-shadow: 0 8px 20px rgba(0,0,0,0.15); position: relative; overflow: hidden; cursor: pointer; flex-shrink: 0; background: #ffffff;">
         <?php if (!empty($user['profile_picture']) && file_exists(UPLOAD_PATH . '/' . $user['profile_picture'])): ?>
-            <img src="storage/uploads/<?= Security::e($user['profile_picture']) ?>" alt="Profile Picture" style="width: 100%; height: 100%; object-fit: cover; object-position: center; display: block; border-radius: 14px;">
+            <img src="storage/uploads/<?= Security::e($user['profile_picture']) ?>" alt="Profile Picture"
+                style="width: 100%; height: 100%; object-fit: cover; object-position: center; display: block; border-radius: 14px;">
         <?php else: ?>
-            <span style="width: 100%; height: 100%; display: grid; place-items: center; color: #ffffff; font-size: 2.5rem; font-weight: 800; background: linear-gradient(135deg, #054d9e 0%, #18a999 100%); border-radius: 14px;"><?= Security::e(strtoupper(substr($user['name'], 0, 1))) ?></span>
+            <span
+                style="width: 100%; height: 100%; display: grid; place-items: center; color: #ffffff; font-size: 2.5rem; font-weight: 800; background: linear-gradient(135deg, #054d9e 0%, #18a999 100%); border-radius: 14px;"><?= Security::e(strtoupper(substr($user['name'], 0, 1))) ?></span>
         <?php endif; ?>
         <div class="profile-avatar-overlay">
             <span>Change</span>
@@ -20,7 +24,8 @@
     <div>
         <h1 class="h3 mb-1"><?= Security::e($user['name']) ?></h1>
         <div class="text-muted"><?= Security::e($user['role_name'] ?? $user['role_slug']) ?> ·
-            <?= Security::e($user['status']) ?></div>
+            <?= Security::e($user['status']) ?>
+        </div>
     </div>
     <div class="ms-lg-auto d-flex gap-2">
         <a class="btn btn-outline-primary" href="index.php?page=trainee-profile">Edit Profile</a>
@@ -74,7 +79,8 @@
         <div class="panel h-100">
             <h2 class="h5">Login Activity</h2>
             <p class="small text-muted">First login: <?= Security::e($user['first_login'] ?? '-') ?><br>Last active:
-                <?= Security::e($user['last_active'] ?? '-') ?></p>
+                <?= Security::e($user['last_active'] ?? '-') ?>
+            </p>
             <?php foreach ($learning['login_activity'] as $row): ?>
                 <p class="border-bottom pb-2 mb-2"><strong><?= Security::e($row['status']) ?></strong><br><span
                         class="small text-muted"><?= Security::e($row['created_at']) ?> ·
@@ -97,7 +103,8 @@
                     </p>
                     <div class="progress mb-2">
                         <div class="progress-bar" style="width: <?= (int) $course['progress_percent'] ?>%">
-                            <?= (int) $course['progress_percent'] ?>%</div>
+                            <?= (int) $course['progress_percent'] ?>%
+                        </div>
                     </div>
                     <span
                         class="badge text-bg-<?= $course['certificate_available'] ? 'success' : 'secondary' ?>"><?= $course['certificate_available'] ? 'Certificate Available' : 'Certificate Pending' ?></span>

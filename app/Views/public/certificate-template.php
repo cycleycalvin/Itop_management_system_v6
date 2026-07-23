@@ -141,7 +141,7 @@ $verifyUrl = APP_URL . '/index.php?page=verify-certificate&code=' . urlencode((s
         }
         
         .cert-logo-img {
-            height: 80px;
+            height: 160px;
             margin-bottom: 20px;
             object-fit: contain;
         }
@@ -209,23 +209,23 @@ $verifyUrl = APP_URL . '/index.php?page=verify-certificate&code=' . urlencode((s
             z-index: 2;
         }
         .cert-footer-left {
-            width: 30%;
+            width: 25%;
             text-align: left;
         }
         .cert-footer-center {
-            width: 40%;
+            width: 50%;
             text-align: center;
             display: flex;
             flex-direction: column;
             align-items: center;
         }
         .cert-footer-right {
-            width: 30%;
+            width: 25%;
         }
         
         .cert-qr-img {
-            width: 70px;
-            height: 70px;
+            width: 90px;
+            height: 90px;
             margin-bottom: 5px;
             object-fit: contain;
         }
@@ -241,16 +241,16 @@ $verifyUrl = APP_URL . '/index.php?page=verify-certificate&code=' . urlencode((s
         }
         
         .cert-signature-img {
-            height: 65px;
+            height: 90px;
             margin-bottom: 5px;
             object-fit: contain;
         }
         .cert-sign-spacer {
-            height: 40px;
+            height: 60px;
         }
         .cert-sign-line {
-            width: 260px;
-            border-top: 2px solid #000;
+            width: 350px;
+            border-top: 1.5px solid #000;
             padding-top: 8px;
             margin-top: 5px;
             line-height: 1.2;
@@ -323,7 +323,7 @@ $verifyUrl = APP_URL . '/index.php?page=verify-certificate&code=' . urlencode((s
                 <img class="cert-logo-img" src="<?= APP_URL ?>/public/assets/img/centexs-logo-with-outline-1.png" alt="">
             <?php endif; ?>
             
-            <div class="cert-title"><?= Security::e($title) ?></div>
+            <div class="cert-title">CERTIFICATE</div>
             <div class="cert-subtitle">OF COMPLETION</div>
             
             <div class="cert-intro"><?= Security::e($intro) ?></div>
