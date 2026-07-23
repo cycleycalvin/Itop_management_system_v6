@@ -19,8 +19,11 @@ try {
     // fallback silently
 }
 ?>
+<?php
+$userTheme = Auth::check() ? (Auth::user()['theme_preference'] ?? 'light') : 'light';
+?>
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="<?= Security::e($userTheme) ?>">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -66,17 +69,8 @@ try {
                             <span class="topbar-badge" data-badge="notifications"><?= (int) $notificationCount ?></span>
                         <?php endif; ?>
                     </a>
-                    <div class="dropdown">
-                        <button class="topbar-user-btn" data-bs-toggle="dropdown" aria-expanded="false">
-                            <span class="topbar-user-name"><?= Security::e(Auth::user()['name']) ?></span>
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-                        </button>
-                        <ul class="dropdown-menu dropdown-menu-end">
-                            <li><a class="dropdown-item" href="index.php?page=profile">Profile Dashboard</a></li>
-                            <li><a class="dropdown-item" href="index.php?page=dashboard">Dashboard</a></li>
-                            <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item" href="index.php?page=logout">Logout</a></li>
-                        </ul>
+                    <div class="topbar-user-pill d-flex align-items-center gap-2 px-3 py-1.5 rounded-pill bg-light border">
+                        <span class="topbar-user-name fw-semibold small text-dark"><?= Security::e(Auth::user()['name']) ?></span>
                     </div>
                 </div>
             </div>

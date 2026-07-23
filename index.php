@@ -67,8 +67,15 @@ $routes = [
         'admin-participant-detail' => [AdminController::class, 'participantDetail'],
         'admin-system-settings' => [AdminController::class, 'systemSettings'],
         'admin-backup-database' => [AdminController::class, 'backupDatabase'],
+        'admin-profile' => [AdminController::class, 'profile'],
     ],
     'POST' => [
+        'admin-update-profile' => [AdminController::class, 'updateProfile'],
+        'admin-change-password' => [AdminController::class, 'changePassword'],
+        'admin-update-email' => [AdminController::class, 'updateEmail'],
+        'admin-save-preferences' => [AdminController::class, 'savePreferences'],
+        'admin-revoke-session' => [AdminController::class, 'revokeSession'],
+        'admin-logout-all-devices' => [AdminController::class, 'logoutAllDevices'],
         'admin-participant-update' => [AdminController::class, 'updateParticipant'],
         'admin-save-analytics-details' => [AdminController::class, 'saveAnalyticsDetails'],
         'admin-create-custom-chart' => [AdminController::class, 'createCustomChart'],
@@ -113,6 +120,8 @@ $routes = [
         'save-profile-picture' => [AdminController::class, 'saveProfilePicture'],
         'instructor-claim-course' => [AdminController::class, 'claimCourse'],
         'instructor-unassign-course' => [AdminController::class, 'unassignCourse'],
+        'admin-verify-document' => [AdminController::class, 'verifyTraineeDocument'],
+        'admin-reject-document' => [AdminController::class, 'rejectTraineeDocument'],
     ],
 ];
 

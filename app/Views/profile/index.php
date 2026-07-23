@@ -1,11 +1,11 @@
 <?php use App\Core\Security; use App\Core\View; ?>
 <?php View::partial('partials/role-nav'); ?>
 <div class="profile-hero overview-panel mb-4 animate-in">
-    <div class="profile-avatar" onclick="document.getElementById('avatarFileInput').click()">
-        <?php if (!empty($user['profile_picture'])): ?>
-            <img src="storage/uploads/<?= Security::e($user['profile_picture']) ?>" alt="Profile Picture">
+    <div class="profile-avatar" onclick="document.getElementById('avatarFileInput').click()" style="width: 120px; height: 120px; min-width: 120px; min-height: 120px; max-width: 120px; max-height: 120px; border-radius: 18px; border: 4px solid #ffffff; outline: 2px solid #e2e8f0; box-shadow: 0 8px 20px rgba(0,0,0,0.15); position: relative; overflow: hidden; cursor: pointer; flex-shrink: 0; background: #ffffff;">
+        <?php if (!empty($user['profile_picture']) && file_exists(UPLOAD_PATH . '/' . $user['profile_picture'])): ?>
+            <img src="storage/uploads/<?= Security::e($user['profile_picture']) ?>" alt="Profile Picture" style="width: 100%; height: 100%; object-fit: cover; object-position: center; display: block; border-radius: 14px;">
         <?php else: ?>
-            <span><?= Security::e(strtoupper(substr($user['name'], 0, 1))) ?></span>
+            <span style="width: 100%; height: 100%; display: grid; place-items: center; color: #ffffff; font-size: 2.5rem; font-weight: 800; background: linear-gradient(135deg, #054d9e 0%, #18a999 100%); border-radius: 14px;"><?= Security::e(strtoupper(substr($user['name'], 0, 1))) ?></span>
         <?php endif; ?>
         <div class="profile-avatar-overlay">
             <span>Change</span>

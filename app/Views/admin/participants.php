@@ -451,6 +451,16 @@ $buildUrl = static function(array $extra) use ($queryParams): string {
                     <!-- Dynamic -->
                 </div>
             </div>
+
+            <!-- Uploaded Verification Documents -->
+            <div class="cm-detail-section mt-4">
+                <h4 class="pm-drawer-section-title d-flex justify-content-between align-items-center">
+                    <span>Uploaded Verification Documents</span>
+                </h4>
+                <div class="pm-drawer-list" id="drDocumentsList">
+                    <!-- Dynamic -->
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -775,6 +785,66 @@ function openTraineeDetail(userId) {
                         });
                     } else {
                         certsList.innerHTML = '<p class="text-muted small italic">No certificates issued yet.</p>';
+                    }
+                }
+
+                // Render Uploaded Verification Documents List
+                const docsList = document.getElementById('drDocumentsList');
+                if (docsList) {
+                    docsList.innerHTML = '';
+                    if (data.documents && data.documents.length > 0) {
+                        data.documents.forEach(d => {
+                            const row = document.createElement('div');
+                            row.className = 'pm-drawer-item d-flex align-items-center justify-content-between gap-2 p-2.5 mb-2 border rounded-3 bg-surface';
+                            
+                            const left = document.createElement('div');
+                            left.style.minWidth = '0';
+
+                            const title = document.createElement('h5');
+                            title.className = 'pm-drawer-item-title text-truncate font-weight-bold mb-0.5';
+                            title.style.fontSize = '0.85rem';
+                            title.textContent = d.document_type || 'Supporting File';
+                            
+                            const sub = document.createElement('p');
+                            sub.className = 'pm-drawer-item-sub text-truncate mb-0';
+                            sub.style.fontSize = '0.75rem';
+                            sub.textContent = `${d.file_name} (${d.status || 'Pending'})`;
+                            
+                            left.appendChild(title);
+                            left.appendChild(sub);
+                            row.appendChild(left);
+
+                            const right = document.createElement('div');
+                            right.className = 'd-flex align-items-center gap-1 flex-shrink-0';
+                            
+                            const badge = document.createElement('span');
+                            badge.className = (d.status === 'Verified') ? 'badge bg-success-subtle text-success border border-success-subtle rounded-pill px-2 py-0.5' : 'badge bg-warning-subtle text-warning border border-warning-subtle rounded-pill px-2 py-0.5';
+                            badge.style.fontSize = '0.7rem';
+                            badge.textContent = (d.status === 'Verified') ? 'Verified' : 'Pending Audit';
+                            right.appendChild(badge);
+
+                            if (d.file_path) {
+                                const link = document.createElement('a');
+                                link.href = 'storage/uploads/' + d.file_path;
+                                link.download = true;
+                                link.className = 'btn btn-sm btn-outline-primary py-0.5 px-2';
+                                link.style.fontSize = '0.75rem';
+                                link.textContent = 'Download';
+                                right.appendChild(link);
+                            }
+                            row.appendChild(right);
+
+                            docsList.appendChild(row);
+                        });
+
+                        const auditLink = document.createElement('a');
+                        auditLink.href = 'index.php?page=admin-documentation&trainee_id=' + trainee.id;
+                        auditLink.className = 'btn btn-sm btn-outline-secondary w-100 mt-2';
+                        auditLink.style.fontSize = '0.8rem';
+                        auditLink.textContent = 'Audit & Verify in Documentation Hub →';
+                        docsList.appendChild(auditLink);
+                    } else {
+                        docsList.innerHTML = '<p class="text-muted small italic mb-1">No verification documents uploaded yet.</p><a href="index.php?page=admin-documentation&trainee_id=' + trainee.id + '" class="btn btn-sm btn-outline-secondary w-100 mt-1" style="font-size:0.775rem">Open Trainee Documentation Hub →</a>';
                     }
                 }
 

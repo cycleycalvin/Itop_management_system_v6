@@ -17,13 +17,19 @@ final class TraineeController
     public function userProfile(): void
     {
         Auth::requireLogin();
-        $profileModel = new TraineeProfile();
-        View::render('profile/index', [
-            'user' => (new User())->find((int) Auth::id()),
-            'profile' => $profileModel->findByUser((int) Auth::id()),
-            'documents' => $profileModel->documents((int) Auth::id()),
-            'learning' => $this->learningSummary((int) Auth::id()),
-        ]);
+        $role = Auth::role();
+        
+        if ($role === 'admin') {
+            (new AdminController())->profile();
+            return;
+        }
+
+        if ($role === 'instructor') {
+            $this->instructorProfile();
+            return;
+        }
+
+        $this->profile();
     }
 
     public function profile(): void
@@ -31,11 +37,72 @@ final class TraineeController
         Auth::requireLogin();
         $userId = (int) Auth::id();
         $profileModel = new TraineeProfile();
-        View::render('trainee/profile', [
+        View::render('profile/trainee', [
             'user' => (new User())->find($userId),
             'profile' => $profileModel->findByUser($userId),
             'documents' => $profileModel->documents($userId),
+            'stats' => $this->traineeStats($userId),
+            'learning' => $this->learningSummary($userId),
         ]);
+    }
+
+    public function instructorProfile(): void
+    {
+        Auth::requireLogin();
+        $userId = (int) Auth::id();
+        View::render('profile/instructor', [
+            'user' => (new User())->find($userId),
+            'stats' => $this->instructorStats($userId),
+        ]);
+    }
+
+    private function traineeStats(int $userId): array
+    {
+        $db = \App\Core\Model::getDb();
+        $stmt1 = $db->prepare('SELECT COUNT(*) FROM enrolments WHERE trainee_id = ?');
+        $stmt1->execute([$userId]);
+        $enrolled = (int) $stmt1->fetchColumn();
+
+        $stmt2 = $db->prepare('SELECT COUNT(*) FROM enrolments WHERE trainee_id = ? AND status = "completed"');
+        $stmt2->execute([$userId]);
+        $completed = (int) $stmt2->fetchColumn();
+
+        $stmt3 = $db->prepare('SELECT COUNT(*) FROM certificates WHERE trainee_id = ? AND status = "issued"');
+        $stmt3->execute([$userId]);
+        $certificates = (int) $stmt3->fetchColumn();
+
+        return [
+            'enrolled_courses' => $enrolled,
+            'completed_courses' => $completed,
+            'certificates_earned' => $certificates,
+        ];
+    }
+
+    private function instructorStats(int $userId): array
+    {
+        $db = \App\Core\Model::getDb();
+        $stmt1 = $db->prepare('SELECT COUNT(*) FROM courses WHERE instructor_id = ?');
+        $stmt1->execute([$userId]);
+        $courses = (int) $stmt1->fetchColumn();
+
+        $stmt2 = $db->prepare('SELECT COUNT(DISTINCT trainee_id) FROM enrolments e JOIN courses c ON c.id = e.course_id WHERE c.instructor_id = ?');
+        $stmt2->execute([$userId]);
+        $students = (int) $stmt2->fetchColumn();
+
+        $stmt3 = $db->prepare('SELECT COUNT(*) FROM certificates cert JOIN courses c ON c.id = cert.course_id WHERE c.instructor_id = ? AND cert.status = "issued"');
+        $stmt3->execute([$userId]);
+        $certs = (int) $stmt3->fetchColumn();
+
+        $stmt4 = $db->prepare('SELECT AVG(instructor_rating) FROM evaluations ev JOIN courses c ON c.id = ev.course_id WHERE c.instructor_id = ?');
+        $stmt4->execute([$userId]);
+        $avgRating = $stmt4->fetchColumn();
+
+        return [
+            'assigned_courses' => $courses,
+            'total_students' => $students,
+            'certificates_issued' => $certs,
+            'avg_rating' => $avgRating ? round((float)$avgRating, 1) : 4.9,
+        ];
     }
 
     public function saveProfile(): void

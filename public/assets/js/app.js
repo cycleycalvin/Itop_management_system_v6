@@ -513,6 +513,35 @@
             html += '  <div class="um-detail-row"><span class="um-detail-key">Last Active</span><span class="um-detail-value">' + formatDate(u.last_active) + '</span></div>';
             html += '</div>';
 
+            // Uploaded Verification Documents (For Trainees)
+            if (data.documents && data.documents.length > 0) {
+                html += '<div class="um-detail-section">';
+                html += '  <h5 class="um-detail-section-title d-flex justify-content-between align-items-center"><span>Uploaded Verification Documents</span><span class="badge bg-primary-subtle text-primary rounded-pill px-2 py-0.5">' + data.documents.length + ' File(s)</span></h5>';
+                data.documents.forEach(function(doc) {
+                    var statusBadge = (doc.status === 'Verified')
+                        ? '<span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill px-2 py-0.5" style="font-size:0.7rem">Verified</span>'
+                        : '<span class="badge bg-warning-subtle text-warning border border-warning-subtle rounded-pill px-2 py-0.5" style="font-size:0.7rem">Pending Audit</span>';
+                    html += '  <div class="p-2.5 mb-2 border rounded-3 bg-surface d-flex align-items-center justify-content-between gap-2">';
+                    html += '    <div style="min-width:0">';
+                    html += '      <span class="fw-bold d-block text-truncate" style="font-size:0.825rem;color:var(--ims-text)">' + escHtml(doc.document_type) + '</span>';
+                    html += '      <span class="text-muted d-block text-truncate" style="font-size:0.75rem">' + escHtml(doc.file_name) + '</span>';
+                    html += '    </div>';
+                    html += '    <div class="d-flex align-items-center gap-1.5 flex-shrink-0">';
+                    html +=        statusBadge;
+                    html += '      <a href="storage/uploads/' + escHtml(doc.file_path) + '" download class="btn btn-sm btn-outline-primary py-0.5 px-2" style="font-size:0.75rem">Download</a>';
+                    html += '    </div>';
+                    html += '  </div>';
+                });
+                html += '  <a href="index.php?page=admin-documentation&trainee_id=' + u.id + '" class="btn btn-sm btn-outline-secondary w-100 mt-1">Audit & Verify in Documentation Hub →</a>';
+                html += '</div>';
+            } else if (u.role_slug === 'trainee') {
+                html += '<div class="um-detail-section">';
+                html += '  <h5 class="um-detail-section-title">Uploaded Verification Documents</h5>';
+                html += '  <p style="font-size:0.8rem;color:var(--ims-text-muted);margin:0">No verification documents uploaded by this trainee yet.</p>';
+                html += '  <a href="index.php?page=admin-documentation&trainee_id=' + u.id + '" class="btn btn-sm btn-outline-secondary w-100 mt-2">Open Trainee Documentation Hub →</a>';
+                html += '</div>';
+            }
+
             html += '<div class="um-panel-actions">';
             html += '  <button class="um-btn um-btn-secondary" type="button" data-um-panel-edit="' + u.id + '">Edit User</button>';
             html += '  <button class="um-btn um-btn-danger" type="button" data-um-panel-delete="' + u.id + '" data-user-name="' + escHtml(u.name) + '">Delete</button>';

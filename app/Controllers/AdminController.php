@@ -58,7 +58,17 @@ final class AdminController
             echo json_encode(['status' => 'error', 'message' => 'User not found']);
             exit;
         }
-        echo json_encode(['status' => 'success', 'user' => $user]);
+
+        $profileModel = new TraineeProfile();
+        $profile = $profileModel->findByUser($id);
+        $documents = $profileModel->documents($id);
+
+        echo json_encode([
+            'status' => 'success',
+            'user' => $user,
+            'profile' => $profile,
+            'documents' => $documents,
+        ]);
         exit;
     }
 
@@ -646,6 +656,41 @@ final class AdminController
         fclose($out);
     }
 
+    public function verifyTraineeDocument(): void
+    {
+        Auth::requireRole(['admin']);
+        Security::verifyCsrf();
+        $docId = (int) ($_POST['document_id'] ?? 0);
+        $traineeId = (int) ($_POST['trainee_id'] ?? 0);
+        
+        $db = \App\Core\Model::getDb();
+        $stmt = $db->prepare("UPDATE trainee_documents SET status = 'Verified', verified_at = NOW() WHERE document_id = ?");
+        $stmt->execute([$docId]);
+
+        // Update Master Data profile verification status
+        $profileStmt = $db->prepare("UPDATE trainee_profiles SET is_verified = 1, verification_status = 'Verified', updated_at = NOW() WHERE user_id = ?");
+        $profileStmt->execute([$traineeId]);
+
+        Activity::log("Verified trainee document ID #{$docId} and updated Master Data");
+        header("Location: index.php?page=admin-documentation&trainee_id={$traineeId}&success=Document+verified+and+Master+Data+updated");
+    }
+
+    public function rejectTraineeDocument(): void
+    {
+        Auth::requireRole(['admin']);
+        Security::verifyCsrf();
+        $docId = (int) ($_POST['document_id'] ?? 0);
+        $traineeId = (int) ($_POST['trainee_id'] ?? 0);
+        $notes = Security::cleanString($_POST['notes'] ?? 'Verification rejected by administrator');
+        
+        $db = \App\Core\Model::getDb();
+        $stmt = $db->prepare("UPDATE trainee_documents SET status = 'Rejected', verification_notes = ? WHERE document_id = ?");
+        $stmt->execute([$notes, $docId]);
+
+        Activity::log("Rejected trainee document ID #{$docId}");
+        header("Location: index.php?page=admin-documentation&trainee_id={$traineeId}&error=Document+verification+rejected");
+    }
+
     public function evaluations(): void
     {
         Auth::requireRole(['admin']);
@@ -1180,9 +1225,15 @@ final class AdminController
         $certStmt->execute([$userId]);
         $certificates = $certStmt->fetchAll();
 
+        $profileModel = new TraineeProfile();
+        $profile = $profileModel->findByUser($userId);
+        $documents = $profileModel->documents($userId);
+
         echo json_encode([
             'status' => 'success',
             'trainee' => $trainee,
+            'profile' => $profile,
+            'documents' => $documents,
             'courses' => $courses,
             'certificates' => $certificates
         ]);
@@ -1386,5 +1437,218 @@ final class AdminController
         }
 
         header('Location: index.php?page=admin-system-settings');
+    }
+
+    public function profile(): void
+    {
+        Auth::requireRole(['admin']);
+        $userId = (int) Auth::id();
+        $db = \App\Core\Model::getDb();
+
+        // Ensure enhancement columns exist on users table
+        try {
+            $db->exec("ALTER TABLE users 
+                ADD COLUMN IF NOT EXISTS position VARCHAR(100) NULL AFTER role,
+                ADD COLUMN IF NOT EXISTS department VARCHAR(100) NULL AFTER position,
+                ADD COLUMN IF NOT EXISTS office_location VARCHAR(190) NULL AFTER department,
+                ADD COLUMN IF NOT EXISTS employee_id VARCHAR(50) NULL AFTER office_location,
+                ADD COLUMN IF NOT EXISTS two_factor_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER time_zone,
+                ADD COLUMN IF NOT EXISTS password_changed_at DATETIME NULL AFTER last_login,
+                ADD COLUMN IF NOT EXISTS theme_preference VARCHAR(20) NOT NULL DEFAULT 'light' AFTER time_zone,
+                ADD COLUMN IF NOT EXISTS default_landing_page VARCHAR(50) NOT NULL DEFAULT 'dashboard' AFTER theme_preference,
+                ADD COLUMN IF NOT EXISTS notification_preferences JSON NULL AFTER default_landing_page");
+        } catch (\Exception $e) {
+            // Silently continue if columns exist
+        }
+
+        $user = (new User())->find($userId);
+
+        // Calculate admin dashboard metrics
+        $totalCourses = (int) $db->query('SELECT COUNT(*) FROM courses')->fetchColumn();
+        $totalParticipants = (int) $db->query('SELECT COUNT(*) FROM users JOIN roles ON roles.id = users.role_id WHERE roles.slug = "trainee"')->fetchColumn();
+        $totalCertificates = (int) $db->query('SELECT COUNT(*) FROM certificates WHERE status = "issued"')->fetchColumn();
+        $activeCourses = (int) $db->query('SELECT COUNT(*) FROM courses WHERE course_status = "active" OR status = "active"')->fetchColumn();
+        $pendingEnrolments = (int) $db->query('SELECT COUNT(*) FROM enrolments WHERE status = "pending"')->fetchColumn();
+
+        // Calculate failed logins
+        $failedLogins = 0;
+        try {
+            $failedLogins = (int) $db->query('SELECT COUNT(*) FROM login_activity WHERE status = "failed" AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)')->fetchColumn();
+        } catch (\Exception $e) {}
+
+        // Fetch active sessions
+        $activeSessions = [];
+        try {
+            $stmtSess = $db->prepare('SELECT * FROM user_sessions WHERE user_id = ? AND revoked_at IS NULL ORDER BY last_active DESC LIMIT 10');
+            $stmtSess->execute([$userId]);
+            $activeSessions = $stmtSess->fetchAll();
+        } catch (\Exception $e) {}
+
+        // Fetch login history
+        $loginHistory = [];
+        try {
+            $stmtLog = $db->prepare('SELECT * FROM login_activity WHERE user_id = ? OR email = ? ORDER BY created_at DESC LIMIT 10');
+            $stmtLog->execute([$userId, $user['email']]);
+            $loginHistory = $stmtLog->fetchAll();
+        } catch (\Exception $e) {}
+
+        // Fetch activity logs
+        $activityLogs = [];
+        try {
+            $stmtAct = $db->prepare('SELECT * FROM activity_logs WHERE user_id = ? ORDER BY created_at DESC LIMIT 10');
+            $stmtAct->execute([$userId]);
+            $activityLogs = $stmtAct->fetchAll();
+        } catch (\Exception $e) {}
+
+        View::render('admin/profile', [
+            'user' => $user,
+            'stats' => [
+                'total_courses' => $totalCourses,
+                'total_participants' => $totalParticipants,
+                'total_certificates' => $totalCertificates,
+                'active_courses' => $activeCourses,
+                'pending_enrolments' => $pendingEnrolments,
+                'failed_logins_count' => $failedLogins,
+            ],
+            'active_sessions' => $activeSessions,
+            'login_history' => $loginHistory,
+            'activity_logs' => $activityLogs,
+        ]);
+    }
+
+    public function updateProfile(): void
+    {
+        Auth::requireRole(['admin']);
+        Security::verifyCsrf();
+        $userId = (int) Auth::id();
+
+        $name = Security::cleanString($_POST['name'] ?? '');
+        $phone = Security::cleanString($_POST['phone'] ?? '');
+        $position = Security::cleanString($_POST['position'] ?? 'Senior System Administrator');
+        $department = Security::cleanString($_POST['department'] ?? 'IT & Technical Services');
+        $officeLocation = Security::cleanString($_POST['office_location'] ?? 'CENTEXS Kuching Campus');
+        $timeZone = Security::cleanString($_POST['time_zone'] ?? 'Asia/Kuala_Lumpur');
+
+        $db = \App\Core\Model::getDb();
+        $stmt = $db->prepare('UPDATE users SET name = ?, phone = ?, position = ?, department = ?, office_location = ?, time_zone = ?, updated_at = NOW() WHERE id = ?');
+        $stmt->execute([$name, $phone, $position, $department, $officeLocation, $timeZone, $userId]);
+
+        Activity::log('Updated administrator profile information');
+        header('Location: index.php?page=profile&success=' . urlencode('Profile details updated successfully.'));
+    }
+
+    public function changePassword(): void
+    {
+        Auth::requireRole(['admin']);
+        Security::verifyCsrf();
+        $userId = (int) Auth::id();
+        $user = (new User())->find($userId);
+
+        $currentPassword = (string) ($_POST['current_password'] ?? '');
+        $newPassword = (string) ($_POST['new_password'] ?? '');
+        $confirmPassword = (string) ($_POST['confirm_password'] ?? '');
+
+        if (!password_verify($currentPassword, $user['password_hash'])) {
+            header('Location: index.php?page=profile&error=' . urlencode('Incorrect current password.'));
+            return;
+        }
+
+        if (strlen($newPassword) < 8) {
+            header('Location: index.php?page=profile&error=' . urlencode('New password must be at least 8 characters long.'));
+            return;
+        }
+
+        if ($newPassword !== $confirmPassword) {
+            header('Location: index.php?page=profile&error=' . urlencode('New passwords do not match.'));
+            return;
+        }
+
+        $db = \App\Core\Model::getDb();
+        $stmt = $db->prepare('UPDATE users SET password_hash = ?, password_changed_at = NOW(), updated_at = NOW() WHERE id = ?');
+        $stmt->execute([password_hash($newPassword, PASSWORD_DEFAULT), $userId]);
+
+        Activity::log('Changed administrator account password');
+        header('Location: index.php?page=profile&success=' . urlencode('Password updated successfully.'));
+    }
+
+    public function updateEmail(): void
+    {
+        Auth::requireRole(['admin']);
+        Security::verifyCsrf();
+        $userId = (int) Auth::id();
+
+        $email = filter_var($_POST['email'] ?? '', FILTER_VALIDATE_EMAIL);
+        if (!$email) {
+            header('Location: index.php?page=profile&error=' . urlencode('Invalid email address format.'));
+            return;
+        }
+
+        $existing = (new User())->findByEmail($email);
+        if ($existing && (int)$existing['id'] !== $userId) {
+            header('Location: index.php?page=profile&error=' . urlencode('Email address is already in use by another account.'));
+            return;
+        }
+
+        $db = \App\Core\Model::getDb();
+        $stmt = $db->prepare('UPDATE users SET email = ?, updated_at = NOW() WHERE id = ?');
+        $stmt->execute([$email, $userId]);
+
+        Activity::log('Updated administrator email address');
+        header('Location: index.php?page=profile&success=' . urlencode('Email address updated successfully.'));
+    }
+
+    public function savePreferences(): void
+    {
+        Auth::requireRole(['admin']);
+        Security::verifyCsrf();
+        $userId = (int) Auth::id();
+
+        $theme = Security::cleanString($_POST['theme_preference'] ?? 'light');
+        $landingPage = Security::cleanString($_POST['default_landing_page'] ?? 'dashboard');
+        
+        $notifPrefs = json_encode([
+            'email_alerts' => isset($_POST['notif_email']),
+            'security_alerts' => isset($_POST['notif_security']),
+            'system_announcements' => isset($_POST['notif_announcements']),
+        ]);
+
+        $db = \App\Core\Model::getDb();
+        $stmt = $db->prepare('UPDATE users SET theme_preference = ?, default_landing_page = ?, notification_preferences = ?, updated_at = NOW() WHERE id = ?');
+        $stmt->execute([$theme, $landingPage, $notifPrefs, $userId]);
+
+        Activity::log('Saved administrator system preferences');
+        header('Location: index.php?page=profile&success=' . urlencode('Preferences saved successfully.'));
+    }
+
+    public function revokeSession(): void
+    {
+        Auth::requireRole(['admin']);
+        Security::verifyCsrf();
+        $sessionId = (int) ($_POST['session_id'] ?? 0);
+
+        if ($sessionId) {
+            $db = \App\Core\Model::getDb();
+            $stmt = $db->prepare('UPDATE user_sessions SET revoked_at = NOW() WHERE id = ? AND user_id = ?');
+            $stmt->execute([$sessionId, Auth::id()]);
+            Activity::log('Revoked user session');
+        }
+
+        header('Location: index.php?page=profile&success=' . urlencode('Session revoked successfully.'));
+    }
+
+    public function logoutAllDevices(): void
+    {
+        Auth::requireRole(['admin']);
+        Security::verifyCsrf();
+        $userId = (int) Auth::id();
+
+        $db = \App\Core\Model::getDb();
+        try {
+            $stmt = $db->prepare('UPDATE user_sessions SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL');
+            $stmt->execute([$userId]);
+        } catch (\Exception $e) {}
+
+        Activity::log('Logged out administrator account from all devices');
+        header('Location: index.php?page=profile&success=' . urlencode('Logged out from all other active devices.'));
     }
 }
